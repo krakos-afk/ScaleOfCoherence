@@ -18,19 +18,19 @@ func NewService(repo *repository.TeamRepo) *Service {
 }
 
 func (s *Service) Create(ctx context.Context, name string) (dto.Team, error) {
-	id, err := adminOrLeader(ctx)
+	id, err := admin(ctx)
 	if err != nil {
 		return dto.Team{}, err
 	}
 	return s.repo.Create(ctx, id.OrgID, name)
 }
 
-func (s *Service) List(ctx context.Context, limit, offset int) (dto.Page[dto.Team], error) {
+func (s *Service) List(ctx context.Context, limit, offset int, p dto.ListParams) (dto.Page[dto.Team], error) {
 	id, err := identity.GetIdentity(ctx)
 	if err != nil {
 		return dto.Page[dto.Team]{}, err
 	}
-	return s.repo.List(ctx, id.OrgID, limit, offset)
+	return s.repo.List(ctx, id.OrgID, limit, offset, p)
 }
 
 func (s *Service) Get(ctx context.Context, teamID string) (dto.Team, error) {
@@ -66,7 +66,7 @@ func (s *Service) Delete(ctx context.Context, teamID string) error {
 }
 
 // ListMembers is readable by any authenticated org member.
-func (s *Service) ListMembers(ctx context.Context, teamID string, limit, offset int) (dto.Page[dto.TeamMember], error) {
+func (s *Service) ListMembers(ctx context.Context, teamID string, limit, offset int, p dto.ListParams) (dto.Page[dto.TeamMember], error) {
 	id, err := identity.GetIdentity(ctx)
 	if err != nil {
 		return dto.Page[dto.TeamMember]{}, err
@@ -74,7 +74,7 @@ func (s *Service) ListMembers(ctx context.Context, teamID string, limit, offset 
 	if _, err := s.repo.Get(ctx, id.OrgID, teamID); err != nil {
 		return dto.Page[dto.TeamMember]{}, err
 	}
-	return s.repo.ListMembers(ctx, id.OrgID, teamID, limit, offset)
+	return s.repo.ListMembers(ctx, id.OrgID, teamID, limit, offset, p)
 }
 
 // AddMember allows org-admins unconditionally, or a leader of the target team.
@@ -124,17 +124,6 @@ func admin(ctx context.Context) (identity.Identity, error) {
 		return id, err
 	}
 	if !id.IsAdmin() {
-		return id, auth.ErrForbidden
-	}
-	return id, nil
-}
-
-func adminOrLeader(ctx context.Context) (identity.Identity, error) {
-	id, err := identity.GetIdentity(ctx)
-	if err != nil {
-		return id, err
-	}
-	if !id.CanManageTeam() {
 		return id, auth.ErrForbidden
 	}
 	return id, nil

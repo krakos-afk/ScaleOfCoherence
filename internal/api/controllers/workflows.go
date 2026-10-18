@@ -32,7 +32,12 @@ func (c *WorkflowController) Create(w http.ResponseWriter, r *http.Request) {
 
 func (c *WorkflowController) List(w http.ResponseWriter, r *http.Request) {
 	limit, offset := paging(r)
-	page, err := c.svc.List(r.Context(), limit, offset)
+	p, err := listParams(r, "name", "created_at")
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	page, err := c.svc.List(r.Context(), limit, offset, p)
 	respond(w, http.StatusOK, page, err)
 }
 

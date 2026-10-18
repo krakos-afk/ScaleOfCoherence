@@ -7,6 +7,7 @@ import (
 
 	"ScaleOfCoherence/internal/api"
 	"ScaleOfCoherence/internal/auth"
+	"ScaleOfCoherence/internal/comments"
 	"ScaleOfCoherence/internal/database/repository"
 	"ScaleOfCoherence/internal/items"
 	"ScaleOfCoherence/internal/teams"
@@ -24,11 +25,12 @@ func main() {
 	teamSvc := teams.NewService(repository.NewTeamRepo(db.DB()))
 	itemSvc := items.NewService(repository.NewItemRepo(db.DB()))
 	workflowSvc := workflows.NewService(repository.NewWorkflowRepo(db.DB()))
+	commentSvc := comments.NewService(repository.NewCommentRepo(db.DB()))
 
 	addr := ":8080"
 	if p := os.Getenv("PORT"); p != "" {
 		addr = ":" + p
 	}
 	log.Printf("listening on %s", addr)
-	log.Fatal(http.ListenAndServe(addr, api.NewRouter(authSvc, teamSvc, itemSvc, workflowSvc)))
+	log.Fatal(http.ListenAndServe(addr, api.NewRouter(authSvc, teamSvc, itemSvc, workflowSvc, commentSvc)))
 }

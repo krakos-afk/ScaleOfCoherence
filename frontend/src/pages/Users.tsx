@@ -1,26 +1,34 @@
 import { useEffect, useState, type FormEvent } from 'react'
 import { request, userId as getMyId } from '../api/client'
+import SortableTh from '../components/SortableTh'
+import { useDebouncedValue } from '../hooks/useDebouncedValue'
+import { useSort } from '../hooks/useSort'
 
 type OrgUser = { id: string; username: string; usertype: string }
 
-const USERTYPES = ['admin', 'leader', 'editor', 'viewer'] as const
+const USERTYPES = ['admin', 'user'] as const
 
 export default function Users() {
   const [users, setUsers] = useState<OrgUser[]>([])
   const [error, setError] = useState('')
   const [showForm, setShowForm] = useState(false)
-  const [form, setForm] = useState({ email: '', username: '', password: '', usertype: 'viewer' })
+  const [form, setForm] = useState({ email: '', username: '', password: '', usertype: 'user' })
   const [saving, setSaving] = useState(false)
   const [tick, setTick] = useState(0)
+  const [q, setQ] = useState('')
+  const search = useDebouncedValue(q).trim()
+  const { sort, order, toggle } = useSort('username', 'asc')
   const myId = getMyId()
 
   const reload = () => setTick((t) => t + 1)
 
   useEffect(() => {
-    request<OrgUser[]>('GET', '/auth/users')
+    const params = new URLSearchParams({ sort, order })
+    if (search) params.set('q', search)
+    request<OrgUser[]>('GET', `/auth/users?${params}`)
       .then((u) => { setUsers(u); setError('') })
       .catch((err: Error) => setError(err.message))
-  }, [tick])
+  }, [tick, search, sort, order])
 
   const createUser = async (e: FormEvent) => {
     e.preventDefault()
@@ -28,7 +36,7 @@ export default function Users() {
     setError('')
     try {
       await request('POST', '/auth/users', form)
-      setForm({ email: '', username: '', password: '', usertype: 'viewer' })
+      setForm({ email: '', username: '', password: '', usertype: 'user' })
       setShowForm(false)
       reload()
     } catch (err) {
@@ -48,14 +56,7 @@ export default function Users() {
     }
   }
 
-  const badgeClass = (t: string) => {
-    switch (t) {
-      case 'admin': return 'badge-urgent'
-      case 'leader': return 'badge-high'
-      case 'editor': return 'badge-medium'
-      default: return 'badge-low'
-    }
-  }
+  const badgeClass = (t: string) => (t === 'admin' ? 'badge-urgent' : 'badge-low')
 
   return (
     <>
@@ -133,12 +134,22 @@ export default function Users() {
         </div>
       )}
 
+      <div className="list-toolbar">
+        <input
+          type="search"
+          className="search-input"
+          placeholder="Search users…"
+          value={q}
+          onChange={(e) => setQ(e.target.value)}
+        />
+      </div>
+
       <div className="card">
         <table>
           <thead>
             <tr>
-              <th>Username</th>
-              <th>Role</th>
+              <SortableTh label="Username" field="username" sort={sort} order={order} onSort={toggle} />
+              <SortableTh label="Role" field="usertype" sort={sort} order={order} onSort={toggle} />
               <th style={{ width: 1 }} />
             </tr>
           </thead>
@@ -174,7 +185,7 @@ export default function Users() {
             {users.length === 0 && (
               <tr>
                 <td colSpan={3} style={{ textAlign: 'center', color: 'var(--text-muted)', padding: '32px' }}>
-                  No users yet
+                  {search ? 'No matches for your search.' : 'No users yet'}
                 </td>
               </tr>
             )}

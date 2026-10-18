@@ -9,6 +9,7 @@ import (
 	"ScaleOfCoherence/internal/api/controllers"
 	"ScaleOfCoherence/internal/auth"
 	"ScaleOfCoherence/internal/auth/identity"
+	"ScaleOfCoherence/internal/comments"
 	"ScaleOfCoherence/internal/items"
 	"ScaleOfCoherence/internal/teams"
 	"ScaleOfCoherence/internal/workflows"
@@ -19,13 +20,14 @@ var publicPaths = map[string]bool{
 	"/auth/signup": true,
 }
 
-func NewRouter(authSvc *auth.Service, teamSvc *teams.Service, itemSvc *items.Service, workflowSvc *workflows.Service) http.Handler {
+func NewRouter(authSvc *auth.Service, teamSvc *teams.Service, itemSvc *items.Service, workflowSvc *workflows.Service, commentSvc *comments.Service) http.Handler {
 	mux := http.NewServeMux()
 	ac := controllers.NewAuthController(authSvc)
 
 	mux.HandleFunc("POST /auth/signup", ac.Signup)
 	mux.HandleFunc("POST /auth/login", ac.Login)
 	mux.HandleFunc("GET /auth/users", ac.ListUsers)
+	mux.HandleFunc("GET /auth/user-names", ac.ListUserNames)
 	mux.HandleFunc("POST /auth/users", ac.CreateUser)
 	mux.HandleFunc("DELETE /auth/users/{id}", ac.DeleteUser)
 
@@ -45,10 +47,18 @@ func NewRouter(authSvc *auth.Service, teamSvc *teams.Service, itemSvc *items.Ser
 	mux.HandleFunc("GET /items/{id}", ic.Get)
 	mux.HandleFunc("PUT /items/{id}", ic.Update)
 	mux.HandleFunc("DELETE /items/{id}", ic.Delete)
-	mux.HandleFunc("GET /items/{id}/changes", ic.ListChanges)
-	mux.HandleFunc("GET /items/{id}/activity", ic.ListActivity)
+	mux.HandleFunc("POST /items/{id}/advance", ic.AdvanceStage)
+	mux.HandleFunc("POST /items/{id}/status", ic.SetStatus)
+	mux.HandleFunc("GET /items/{id}/timeline", ic.Timeline)
 	mux.HandleFunc("GET /items/my", ic.ListMy)
+	mux.HandleFunc("GET /items/attention", ic.Attention)
 	mux.HandleFunc("GET /items/{id}/activity/open", ic.GetOpenActivity)
+
+	// Item comments.
+	cc := controllers.NewCommentController(commentSvc)
+	mux.HandleFunc("GET /items/{id}/comments", cc.List)
+	mux.HandleFunc("POST /items/{id}/comments", cc.Create)
+	mux.HandleFunc("DELETE /items/{id}/comments/{commentID}", cc.Delete)
 
 	// Stage activity lifecycle endpoints.
 	mux.HandleFunc("POST /items/{id}/activity/claim", ic.ClaimActivity)

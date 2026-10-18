@@ -5,12 +5,13 @@ import (
 	"errors"
 )
 
-// Usertype constants for the organisation-level role stored in the JWT.
+// Org-level usertype constants stored in organization_members.usertype and the
+// JWT "typ" claim. Fine-grained team roles (viewer/editor/leader) live in
+// team_members and are enforced at the repository layer where it matters
+// (claim/approve/reassign, team membership management).
 const (
-	TypeAdmin  = "admin"
-	TypeLeader = "leader"
-	TypeEditor = "editor"
-	TypeViewer = "viewer"
+	TypeAdmin = "admin"
+	TypeUser  = "user"
 )
 
 type Identity struct {
@@ -27,31 +28,15 @@ func (i Identity) IsAdmin() bool {
 	return i.Usertype == TypeAdmin
 }
 
-// IsLeader reports whether the caller holds the org-level "leader" usertype.
-// Fine-grained team-leader checks still happen at the repo level via team_members.
-func (i Identity) IsLeader() bool {
-	return i.Usertype == TypeLeader
-}
-
-// IsEditor reports whether the caller holds the org-level "editor" usertype.
-func (i Identity) IsEditor() bool {
-	return i.Usertype == TypeEditor
-}
-
-// CanWrite reports whether the caller may create or modify resources
-// (admin, leader, or editor). Viewers may only read.
+// CanWrite reports whether the caller may create or modify resources at the
+// org level. Both admin and regular user members may; finer-grained viewer /
+// editor restrictions are enforced per-team at the repository layer.
 func (i Identity) CanWrite() bool {
 	switch i.Usertype {
-	case TypeAdmin, TypeLeader, TypeEditor:
+	case TypeAdmin, TypeUser:
 		return true
 	}
 	return false
-}
-
-// CanManageTeam reports whether the caller may manage team structure
-// (create/rename/delete teams, add/remove members). Only admin and leader.
-func (i Identity) CanManageTeam() bool {
-	return i.IsAdmin() || i.IsLeader()
 }
 
 func WithIdentity(ctx context.Context, id Identity) context.Context {

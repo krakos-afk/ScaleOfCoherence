@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"fmt"
 
 	"ScaleOfCoherence/internal/api/dto"
 )
@@ -50,20 +51,36 @@ func (r *AuthRepo) CreateMember(ctx context.Context, orgID, email, username, has
 func (r *AuthRepo) GetByEmail(ctx context.Context, email string) (dto.AuthUser, error) {
 	var u dto.AuthUser
 	err := r.db.QueryRowContext(ctx, `
-		SELECT u.id, u.password_hash, m.org_id, m.usertype
+		SELECT u.id, u.username, u.password_hash, m.org_id, m.usertype
 		FROM users u JOIN organization_members m ON m.user_id = u.id
 		WHERE lower(u.email) = lower($1)
-		ORDER BY m.created_at LIMIT 1`, email).Scan(&u.ID, &u.PasswordHash, &u.OrgID, &u.Usertype)
+		ORDER BY m.created_at LIMIT 1`, email).Scan(&u.ID, &u.Username, &u.PasswordHash, &u.OrgID, &u.Usertype)
 	if errors.Is(err, sql.ErrNoRows) {
 		return dto.AuthUser{}, ErrNotFound
 	}
 	return u, err
 }
 
-func (r *AuthRepo) ListUsers(ctx context.Context, orgID string) ([]dto.OrgUser, error) {
+var orgUserSorts = map[string]string{
+	"username": "lower(u.username)",
+	"usertype": "om.usertype",
+}
+
+func (r *AuthRepo) ListUsers(ctx context.Context, orgID string, p dto.ListParams) ([]dto.OrgUser, error) {
+	args := []any{orgID}
+	where := "om.org_id = $1"
+	if p.Search != "" {
+		args = append(args, "%"+escapeLike(p.Search)+"%")
+		where += fmt.Sprintf(` AND u.username ILIKE $%d ESCAPE '\'`, len(args))
+	}
+	order := orderBy(orgUserSorts, "username", p.Sort, p.Order)
+	if p.Sort == "usertype" {
+		order += ", lower(u.username)" // deterministic order within a role
+	}
 	rows, err := r.db.QueryContext(ctx, `
 		SELECT u.id, u.username, om.usertype FROM organization_members om
-		JOIN users u ON u.id = om.user_id WHERE om.org_id = $1 ORDER BY u.username`, orgID)
+		JOIN users u ON u.id = om.user_id WHERE `+where+
+		` ORDER BY `+order, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -77,6 +94,28 @@ func (r *AuthRepo) ListUsers(ctx context.Context, orgID string) ([]dto.OrgUser, 
 		users = append(users, u)
 	}
 	return users, rows.Err()
+}
+
+// ListUserNames returns id/username pairs for every member of the org. It is
+// safe for any org member to read (no emails, no usertypes) and is always
+// scoped by the caller's org.
+func (r *AuthRepo) ListUserNames(ctx context.Context, orgID string) ([]dto.UserName, error) {
+	rows, err := r.db.QueryContext(ctx, `
+		SELECT u.id, u.username FROM organization_members om
+		JOIN users u ON u.id = om.user_id WHERE om.org_id = $1 ORDER BY u.username`, orgID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	names := []dto.UserName{}
+	for rows.Next() {
+		var u dto.UserName
+		if err := rows.Scan(&u.ID, &u.Username); err != nil {
+			return nil, err
+		}
+		names = append(names, u)
+	}
+	return names, rows.Err()
 }
 
 // DeleteUser removes a user only if they belong to the given org.
@@ -103,6 +142,7 @@ func insertMember(ctx context.Context, tx *sql.Tx, u *dto.AuthUser, email, usern
 		}
 		return err
 	}
+	u.Username = username
 	_, err = tx.ExecContext(ctx,
 		`INSERT INTO organization_members (org_id, user_id, usertype) VALUES ($1, $2, $3)`,
 		u.OrgID, u.ID, u.Usertype)

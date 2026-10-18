@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"fmt"
 
 	"ScaleOfCoherence/internal/api/dto"
 )
@@ -26,13 +27,28 @@ func (r *TeamRepo) Create(ctx context.Context, orgID, name string) (dto.Team, er
 	return t, err
 }
 
-func (r *TeamRepo) List(ctx context.Context, orgID string, limit, offset int) (dto.Page[dto.Team], error) {
+var teamSorts = map[string]string{
+	"name":       "lower(name)",
+	"created_at": "created_at",
+}
+
+func (r *TeamRepo) List(ctx context.Context, orgID string, limit, offset int, p dto.ListParams) (dto.Page[dto.Team], error) {
 	page := dto.Page[dto.Team]{Data: []dto.Team{}}
-	if err := r.db.QueryRowContext(ctx, `SELECT count(*) FROM teams WHERE org_id = $1`, orgID).Scan(&page.Total); err != nil {
+	args := []any{orgID}
+	where := "org_id = $1"
+	if p.Search != "" {
+		args = append(args, "%"+escapeLike(p.Search)+"%")
+		where += fmt.Sprintf(` AND name ILIKE $%d ESCAPE '\'`, len(args))
+	}
+	if err := r.db.QueryRowContext(ctx, `SELECT count(*) FROM teams WHERE `+where, args...).Scan(&page.Total); err != nil {
 		return page, err
 	}
+	listArgs := append(args, limit, offset)
 	rows, err := r.db.QueryContext(ctx,
-		`SELECT id, name, created_at FROM teams WHERE org_id = $1 ORDER BY name LIMIT $2 OFFSET $3`, orgID, limit, offset)
+		`SELECT id, name, created_at FROM teams WHERE `+where+
+			` ORDER BY `+orderBy(teamSorts, "name", p.Sort, p.Order)+
+			fmt.Sprintf(` LIMIT $%d OFFSET $%d`, len(listArgs)-1, len(listArgs)),
+		listArgs...)
 	if err != nil {
 		return page, err
 	}
@@ -75,15 +91,33 @@ func (r *TeamRepo) Delete(ctx context.Context, orgID, id string) error {
 	return affected(r.db.ExecContext(ctx, `DELETE FROM teams WHERE org_id = $1 AND id = $2`, orgID, id))
 }
 
-func (r *TeamRepo) ListMembers(ctx context.Context, orgID, teamID string, limit, offset int) (dto.Page[dto.TeamMember], error) {
+var teamMemberSorts = map[string]string{
+	"username": "lower(u.username)",
+	"role":     "CASE tm.role WHEN 'leader' THEN 0 WHEN 'editor' THEN 1 WHEN 'commentator' THEN 2 ELSE 3 END",
+}
+
+func (r *TeamRepo) ListMembers(ctx context.Context, orgID, teamID string, limit, offset int, p dto.ListParams) (dto.Page[dto.TeamMember], error) {
 	page := dto.Page[dto.TeamMember]{Data: []dto.TeamMember{}}
-	if err := r.db.QueryRowContext(ctx, `SELECT count(*) FROM team_members WHERE org_id = $1 AND team_id = $2`, orgID, teamID).Scan(&page.Total); err != nil {
+	args := []any{orgID, teamID}
+	where := "tm.org_id = $1 AND tm.team_id = $2"
+	if p.Search != "" {
+		args = append(args, "%"+escapeLike(p.Search)+"%")
+		where += fmt.Sprintf(` AND u.username ILIKE $%d ESCAPE '\'`, len(args))
+	}
+	join := ` FROM team_members tm JOIN users u ON u.id = tm.user_id WHERE `
+	if err := r.db.QueryRowContext(ctx, `SELECT count(*)`+join+where, args...).Scan(&page.Total); err != nil {
 		return page, err
 	}
+	order := orderBy(teamMemberSorts, "username", p.Sort, p.Order)
+	if p.Sort == "role" {
+		order += ", lower(u.username)" // deterministic order within a role
+	}
+	listArgs := append(args, limit, offset)
 	rows, err := r.db.QueryContext(ctx, `
-		SELECT tm.user_id, u.username, tm.role
-		FROM team_members tm JOIN users u ON u.id = tm.user_id
-		WHERE tm.org_id = $1 AND tm.team_id = $2 ORDER BY u.username LIMIT $3 OFFSET $4`, orgID, teamID, limit, offset)
+		SELECT tm.user_id, u.username, tm.role`+join+where+`
+		ORDER BY `+order+
+		fmt.Sprintf(` LIMIT $%d OFFSET $%d`, len(listArgs)-1, len(listArgs)),
+		listArgs...)
 	if err != nil {
 		return page, err
 	}

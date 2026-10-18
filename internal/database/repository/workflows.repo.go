@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"fmt"
 
 	"ScaleOfCoherence/internal/api/dto"
 )
@@ -27,14 +28,28 @@ func (r *WorkflowRepo) Create(ctx context.Context, orgID, userID string, req dto
 	return w, err
 }
 
-func (r *WorkflowRepo) List(ctx context.Context, orgID string, limit, offset int) (dto.Page[dto.Workflow], error) {
+var workflowSorts = map[string]string{
+	"name":       "lower(name)",
+	"created_at": "created_at",
+}
+
+func (r *WorkflowRepo) List(ctx context.Context, orgID string, limit, offset int, p dto.ListParams) (dto.Page[dto.Workflow], error) {
 	page := dto.Page[dto.Workflow]{Data: []dto.Workflow{}}
-	if err := r.db.QueryRowContext(ctx, `SELECT count(*) FROM workflows WHERE org_id = $1`, orgID).Scan(&page.Total); err != nil {
+	args := []any{orgID}
+	where := "org_id = $1"
+	if p.Search != "" {
+		args = append(args, "%"+escapeLike(p.Search)+"%")
+		where += fmt.Sprintf(` AND (name ILIKE $%d ESCAPE '\' OR description ILIKE $%d ESCAPE '\')`, len(args), len(args))
+	}
+	if err := r.db.QueryRowContext(ctx, `SELECT count(*) FROM workflows WHERE `+where, args...).Scan(&page.Total); err != nil {
 		return page, err
 	}
+	listArgs := append(args, limit, offset)
 	rows, err := r.db.QueryContext(ctx, `
 		SELECT id, name, description, created_at FROM workflows
-		WHERE org_id = $1 ORDER BY name LIMIT $2 OFFSET $3`, orgID, limit, offset)
+		WHERE `+where+` ORDER BY `+orderBy(workflowSorts, "name", p.Sort, p.Order)+
+		fmt.Sprintf(` LIMIT $%d OFFSET $%d`, len(listArgs)-1, len(listArgs)),
+		listArgs...)
 	if err != nil {
 		return page, err
 	}

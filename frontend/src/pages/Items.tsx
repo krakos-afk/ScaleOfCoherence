@@ -1,7 +1,10 @@
 import { useEffect, useState, useCallback } from 'react'
-import { request, canWrite } from '../api/client'
+import { request, canWrite, isAdmin } from '../api/client'
 import ItemForm, { type ItemData, type ItemFormValues, type Workflow, type Stage } from '../components/ItemForm'
 import ItemDetail from '../components/ItemDetail'
+import SortableTh from '../components/SortableTh'
+import { useDebouncedValue } from '../hooks/useDebouncedValue'
+import { useSort } from '../hooks/useSort'
 
 const LIMIT = 10
 
@@ -34,15 +37,25 @@ type ListTab = 'all' | 'my'
 
 // ─── Items page ───────────────────────────────────────────────────────────────
 
-export default function Items() {
+export default function Items({ initialTab = 'all' }: { initialTab?: ListTab } = {}) {
   const write = canWrite()
 
   // List state
-  const [tab, setTab] = useState<ListTab>('all')
+  const [tab, setTab] = useState<ListTab>(initialTab)
   const [rows, setRows] = useState<ItemData[]>([])
   const [total, setTotal] = useState(0)
   const [page, setPage] = useState(1)
   const [listError, setListError] = useState('')
+
+  // Filters (applied to the All Items tab)
+  const [q, setQ] = useState('')
+  const search = useDebouncedValue(q).trim()
+  const [fPriority, setFPriority] = useState('')
+  const [fStatus, setFStatus] = useState('')
+  const [fWorkflow, setFWorkflow] = useState('')
+  const [fStage, setFStage] = useState('')
+  const [fAssigned, setFAssigned] = useState('')
+  const { sort, order, toggle } = useSort('created_at', 'desc')
 
   // Workflows/stages for form + display
   const [workflows, setWorkflows] = useState<Workflow[]>([])
@@ -67,12 +80,15 @@ export default function Items() {
         setWorkflows(res.data)
         const allStages = await Promise.all(
           res.data.map(async (w) => {
-            const s = await request<{ id: string; name: string }[]>('GET', `/workflows/${w.id}/stages`)
+            const s = await request<{ id: string; name: string; approver_user_id: string | null; position: number; assigned_team_id: string }[]>('GET', `/workflows/${w.id}/stages`)
             return s.map((stage) => ({
               id: stage.id,
               name: stage.name,
               workflowId: w.id,
               workflowName: w.name,
+              approver_user_id: stage.approver_user_id,
+              position: stage.position,
+              assigned_team_id: stage.assigned_team_id,
             }))
           }),
         )
@@ -83,9 +99,21 @@ export default function Items() {
 
   // Load items
   useEffect(() => {
-    const path = tab === 'my'
-      ? `/items/my?page=${page}&limit=${LIMIT}`
-      : `/items?page=${page}&limit=${LIMIT}`
+    const params = new URLSearchParams({ page: String(page), limit: String(LIMIT) })
+    let path: string
+    if (tab === 'my') {
+      path = `/items/my?${params}`
+    } else {
+      if (search) params.set('q', search)
+      if (fPriority) params.set('priority', fPriority)
+      if (fStatus) params.set('status', fStatus)
+      if (fWorkflow) params.set('workflow_id', fWorkflow)
+      if (fStage) params.set('stage_id', fStage)
+      if (fAssigned) params.set('assigned_to', fAssigned)
+      params.set('sort', sort)
+      params.set('order', order)
+      path = `/items?${params}`
+    }
 
     request<{ data: ItemData[]; total: number }>('GET', path)
       .then((res) => {
@@ -94,13 +122,37 @@ export default function Items() {
         setListError('')
       })
       .catch((err: Error) => setListError(err.message))
-  }, [tab, page, tick])
+  }, [tab, page, tick, search, fPriority, fStatus, fWorkflow, fStage, fAssigned, sort, order])
+
+  const changeSort = (field: string) => {
+    toggle(field)
+    setPage(1)
+  }
 
   // Reset to page 1 when tab changes
   const switchTab = (t: ListTab) => {
     setTab(t)
     setPage(1)
   }
+
+  const changeFilter = (setter: (v: string) => void) => (v: string) => {
+    setter(v)
+    setPage(1)
+  }
+
+  const clearFilters = () => {
+    setQ('')
+    setFPriority('')
+    setFStatus('')
+    setFWorkflow('')
+    setFStage('')
+    setFAssigned('')
+    setPage(1)
+  }
+
+  const hasFilters = !!search || !!fPriority || !!fStatus || !!fWorkflow || !!fStage || !!fAssigned
+
+  const stageOptions = fWorkflow ? stages.filter((s) => s.workflowId === fWorkflow) : stages
 
   const pages = Math.max(1, Math.ceil(total / LIMIT))
 
@@ -220,12 +272,62 @@ export default function Items() {
         ))}
       </div>
 
+      {/* Filters (All Items only) */}
+      {tab === 'all' && (
+        <div className="list-toolbar">
+          <input
+            type="search"
+            className="search-input"
+            placeholder="Search title or description…"
+            value={q}
+            onChange={(e) => { setQ(e.target.value); setPage(1) }}
+          />
+          <select className={`filter-select${fPriority ? ' active' : ''}`} value={fPriority} onChange={(e) => changeFilter(setFPriority)(e.target.value)}>
+            <option value="">Any priority</option>
+            <option value="urgent">Urgent</option>
+            <option value="high">High</option>
+            <option value="medium">Medium</option>
+            <option value="low">Low</option>
+          </select>
+          <select className={`filter-select${fStatus ? ' active' : ''}`} value={fStatus} onChange={(e) => changeFilter(setFStatus)(e.target.value)}>
+            <option value="">Any status</option>
+            <option value="open">Open</option>
+            <option value="closed">Closed</option>
+          </select>
+          <select
+            className={`filter-select${fWorkflow ? ' active' : ''}`}
+            value={fWorkflow}
+            onChange={(e) => { setFWorkflow(e.target.value); setFStage(''); setPage(1) }}
+          >
+            <option value="">Any workflow</option>
+            {workflows.map((w) => <option key={w.id} value={w.id}>{w.name}</option>)}
+          </select>
+          <select className={`filter-select${fStage ? ' active' : ''}`} value={fStage} onChange={(e) => changeFilter(setFStage)(e.target.value)}>
+            <option value="">Any stage</option>
+            {stageOptions.map((s) => (
+              <option key={s.id} value={s.id}>{s.workflowName} › {s.name}</option>
+            ))}
+          </select>
+          <select className={`filter-select${fAssigned ? ' active' : ''}`} value={fAssigned} onChange={(e) => changeFilter(setFAssigned)(e.target.value)}>
+            <option value="">Anyone</option>
+            <option value="me">Assigned to me</option>
+            <option value="unassigned">Unassigned</option>
+          </select>
+          {hasFilters && (
+            <button className="btn-link" onClick={clearFilters}>
+              Clear filters
+            </button>
+          )}
+        </div>
+      )}
+
       {/* Item form modal */}
       {formMode !== 'closed' && (
         <ItemForm
           item={formItem}
           workflows={workflows}
           stages={stages}
+          canClose={isAdmin()}
           saving={saving}
           error={formError}
           onSubmit={handleSubmit}
@@ -247,13 +349,27 @@ export default function Items() {
         <table>
           <thead>
             <tr>
-              <th>Title</th>
-              <th>Priority</th>
-              <th>Stage</th>
-              <th>Status</th>
-              <th>Custom Fields</th>
-              <th>Version</th>
-              <th>Created</th>
+              {tab === 'all' ? (
+                <>
+                  <SortableTh label="Title" field="title" sort={sort} order={order} onSort={changeSort} />
+                  <SortableTh label="Priority" field="priority" sort={sort} order={order} onSort={changeSort} />
+                  <th>Stage</th>
+                  <SortableTh label="Status" field="status" sort={sort} order={order} onSort={changeSort} />
+                  <th>Custom Fields</th>
+                  <SortableTh label="Version" field="version" sort={sort} order={order} onSort={changeSort} />
+                  <SortableTh label="Created" field="created_at" sort={sort} order={order} onSort={changeSort} />
+                </>
+              ) : (
+                <>
+                  <th>Title</th>
+                  <th>Priority</th>
+                  <th>Stage</th>
+                  <th>Status</th>
+                  <th>Custom Fields</th>
+                  <th>Version</th>
+                  <th>Created</th>
+                </>
+              )}
               <th style={{ width: 1 }} />
             </tr>
           </thead>
@@ -288,6 +404,13 @@ export default function Items() {
                 <td className="td-muted">{new Date(r.created_at).toLocaleDateString()}</td>
                 <td onClick={(e) => e.stopPropagation()}>
                   <div className="td-actions">
+                    <button
+                      className="btn btn-ghost"
+                      style={{ fontSize: 12, padding: '4px 10px' }}
+                      onClick={() => setDetailId(r.id)}
+                    >
+                      View
+                    </button>
                     {write && (
                       <>
                         <button
@@ -313,7 +436,9 @@ export default function Items() {
             {rows.length === 0 && (
               <tr>
                 <td colSpan={8} style={{ textAlign: 'center', color: 'var(--text-muted)', padding: '32px' }}>
-                  {tab === 'my' ? 'No items are currently assigned to you.' : 'No items yet.'}
+                  {tab === 'my' ? 'No items are currently assigned to you.'
+                    : hasFilters ? 'No items match your filters.'
+                    : 'No items yet.'}
                 </td>
               </tr>
             )}

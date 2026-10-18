@@ -1,5 +1,8 @@
 import { useEffect, useState } from 'react'
 import { request } from '../api/client'
+import SortableTh from './SortableTh'
+import { useDebouncedValue } from '../hooks/useDebouncedValue'
+import { useSort } from '../hooks/useSort'
 
 type Row = { id: string; version?: number } & Record<string, unknown>
 export type Field = {
@@ -29,28 +32,43 @@ type Props = {
   versioned?: boolean
   /** Hide all create/edit/delete actions — render as read-only list */
   readOnly?: boolean
+  /** Field keys that can be sorted by clicking their column header */
+  sortableFields?: string[]
 }
 
-export default function CrudTable({ title, path, fields, manageLabel = 'Members', onManage, versioned, readOnly }: Props) {
+export default function CrudTable({
+  title, path, fields, manageLabel = 'Members', onManage, versioned, readOnly,
+  sortableFields = ['name', 'created_at'],
+}: Props) {
   const [rows, setRows] = useState<Row[]>([])
   const [total, setTotal] = useState(0)
   const [page, setPage] = useState(1)
   const [form, setForm] = useState<FormState | null>(null)
   const [error, setError] = useState('')
   const [saving, setSaving] = useState(false)
+  const [q, setQ] = useState('')
+  const search = useDebouncedValue(q).trim()
+  const { sort, order, toggle } = useSort('name', 'asc')
 
   const [tick, setTick] = useState(0)
   const reload = () => setTick((t) => t + 1)
 
   useEffect(() => {
-    request<{ data: Row[]; total: number }>('GET', `${path}?page=${page}&limit=${LIMIT}`)
+    const params = new URLSearchParams({ page: String(page), limit: String(LIMIT), sort, order })
+    if (search) params.set('q', search)
+    request<{ data: Row[]; total: number }>('GET', `${path}?${params}`)
       .then((res) => {
         setRows(res.data)
         setTotal(res.total)
         setError('')
       })
       .catch((err: Error) => setError(err.message))
-  }, [path, page, tick])
+  }, [path, page, tick, search, sort, order])
+
+  const changeSort = (field: string) => {
+    toggle(field)
+    setPage(1)
+  }
 
   const pages = Math.max(1, Math.ceil(total / LIMIT))
 
@@ -186,12 +204,30 @@ export default function CrudTable({ title, path, fields, manageLabel = 'Members'
         </div>
       )}
 
+      <div className="list-toolbar">
+        <input
+          type="search"
+          className="search-input"
+          placeholder={`Search ${title.toLowerCase()}…`}
+          value={q}
+          onChange={(e) => { setQ(e.target.value); setPage(1) }}
+        />
+      </div>
+
       <div className="card">
         <table>
           <thead>
             <tr>
-              {fields.map((f) => <th key={f.key}>{f.label}</th>)}
-              <th>Created</th>
+              {fields.map((f) => sortableFields.includes(f.key) ? (
+                <SortableTh key={f.key} label={f.label} field={f.key} sort={sort} order={order} onSort={changeSort} />
+              ) : (
+                <th key={f.key}>{f.label}</th>
+              ))}
+              {sortableFields.includes('created_at') ? (
+                <SortableTh label="Created" field="created_at" sort={sort} order={order} onSort={changeSort} />
+              ) : (
+                <th>Created</th>
+              )}
               <th style={{ width: 1 }} />
             </tr>
           </thead>
@@ -238,7 +274,7 @@ export default function CrudTable({ title, path, fields, manageLabel = 'Members'
             {rows.length === 0 && (
               <tr>
                 <td colSpan={fields.length + 2} style={{ textAlign: 'center', color: 'var(--text-muted)', padding: '32px' }}>
-                  No records yet
+                  {search ? 'No matches for your search.' : 'No records yet'}
                 </td>
               </tr>
             )}

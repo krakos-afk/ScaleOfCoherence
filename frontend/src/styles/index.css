@@ -351,6 +351,65 @@ tbody tr:hover { background: #fafbff; }
 
 .td-muted { color: var(--text-muted); font-size: 12px; }
 
+/* ── Sortable table headers ────────────────────────────────────────────────── */
+th.sortable {
+  cursor: pointer;
+  user-select: none;
+}
+
+th.sortable:hover { color: var(--text); }
+
+th.sortable.active { color: var(--accent); }
+
+.sort-arrow {
+  display: inline-block;
+  margin-left: 4px;
+  font-size: 8px;
+  vertical-align: 1px;
+  opacity: .25;
+}
+
+th.sortable.active .sort-arrow { opacity: 1; }
+
+/* ── List toolbar (search + filters above tables) ──────────────────────────── */
+.list-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-bottom: 12px;
+}
+
+.list-toolbar .search-input {
+  flex: 0 1 240px;
+  width: 240px;
+  padding: 6px 10px;
+  font-size: 13px;
+}
+
+.list-toolbar .filter-select {
+  width: auto;
+  max-width: 200px;
+  padding: 6px 8px;
+  font-size: 12.5px;
+  color: var(--text-muted);
+  background: transparent;
+  border-color: transparent;
+}
+
+.list-toolbar .filter-select:hover {
+  border-color: var(--border);
+  background: var(--surface);
+}
+
+.list-toolbar .filter-select.active {
+  color: var(--text);
+  border-color: var(--border);
+  background: var(--surface);
+}
+
+.list-toolbar .btn-link { font-size: 12.5px; }
+
 /* ── Pagination ────────────────────────────────────────────────────────────── */
 .pagination {
   display: flex;
@@ -524,6 +583,74 @@ tbody tr:hover { background: #fafbff; }
   font-size: 28px;
   font-weight: 700;
   color: var(--text);
+}
+
+/* ── Attention widget (dashboard) ──────────────────────────────────────────── */
+.attention-card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow);
+  padding: 18px 20px;
+  max-width: 720px;
+}
+
+.attention-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 8px;
+}
+
+.attention-head h3 {
+  font-size: 14px;
+  font-weight: 700;
+}
+
+.attention-list {
+  list-style: none;
+  margin-bottom: 10px;
+}
+
+.attention-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 0;
+  border-bottom: 1px solid var(--border);
+  cursor: pointer;
+}
+
+.attention-row:last-child { border-bottom: none; }
+
+.attention-row:hover .attention-title { color: var(--accent); }
+
+.attention-title {
+  flex: 1;
+  font-size: 13px;
+  font-weight: 500;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.attention-stage { flex: 0 1 auto; }
+
+.attention-reason {
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: .04em;
+  color: var(--text-muted);
+}
+
+.attention-reason.approval { color: #b45309; }
+
+.attention-empty {
+  font-size: 13px;
+  color: var(--text-muted);
+  padding: 4px 0 10px;
 }
 
 /* ── Members form (inline) ─────────────────────────────────────────────────── */

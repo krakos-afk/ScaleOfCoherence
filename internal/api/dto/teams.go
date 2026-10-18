@@ -7,7 +7,7 @@ type TeamRequest struct {
 }
 
 // AddMemberRequest body for POST /teams/{id}/members.
-// Role must be one of: "viewer", "editor", "leader".
+// Role must be one of: "viewer", "editor", "commentator", "leader".
 type AddMemberRequest struct {
 	UserID string `json:"user_id"`
 	Role   string `json:"role"`

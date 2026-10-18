@@ -1,8 +1,10 @@
 package controllers
 
 import (
+	"errors"
 	"net/http"
 	"strconv"
+	"strings"
 
 	"ScaleOfCoherence/internal/api/dto"
 	"ScaleOfCoherence/internal/teams"
@@ -31,7 +33,12 @@ func (c *TeamController) Create(w http.ResponseWriter, r *http.Request) {
 
 func (c *TeamController) List(w http.ResponseWriter, r *http.Request) {
 	limit, offset := paging(r)
-	teams, err := c.svc.List(r.Context(), limit, offset)
+	p, err := listParams(r, "name", "created_at")
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	teams, err := c.svc.List(r.Context(), limit, offset, p)
 	respond(w, http.StatusOK, teams, err)
 }
 
@@ -59,7 +66,12 @@ func (c *TeamController) Delete(w http.ResponseWriter, r *http.Request) {
 
 func (c *TeamController) ListMembers(w http.ResponseWriter, r *http.Request) {
 	limit, offset := paging(r)
-	m, err := c.svc.ListMembers(r.Context(), r.PathValue("id"), limit, offset)
+	p, err := listParams(r, "username", "role")
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	m, err := c.svc.ListMembers(r.Context(), r.PathValue("id"), limit, offset, p)
 	respond(w, http.StatusOK, m, err)
 }
 
@@ -86,7 +98,7 @@ func (c *TeamController) RemoveMember(w http.ResponseWriter, r *http.Request) {
 // validMemberRole reports whether r is an accepted team-member role.
 func validMemberRole(r string) bool {
 	switch r {
-	case "viewer", "editor", "leader":
+	case "viewer", "editor", "commentator", "leader":
 		return true
 	}
 	return false
@@ -102,6 +114,38 @@ func paging(r *http.Request) (limit, offset int) {
 		page = 1
 	}
 	return limit, (page - 1) * limit
+}
+
+// listParams parses the shared ?q=&sort=&order= list options. sort is checked
+// against the endpoint's whitelist; invalid values are client errors.
+func listParams(r *http.Request, sorts ...string) (dto.ListParams, error) {
+	q := r.URL.Query()
+	p := dto.ListParams{
+		Search: strings.TrimSpace(q.Get("q")),
+		Sort:   q.Get("sort"),
+		Order:  q.Get("order"),
+	}
+	if len(p.Search) > 200 {
+		return p, errors.New("search query is too long")
+	}
+	if p.Sort != "" {
+		valid := false
+		for _, s := range sorts {
+			if s == p.Sort {
+				valid = true
+				break
+			}
+		}
+		if !valid {
+			return p, errors.New("invalid sort")
+		}
+	}
+	switch p.Order {
+	case "", "asc", "desc":
+	default:
+		return p, errors.New("invalid order")
+	}
+	return p, nil
 }
 
 func respond(w http.ResponseWriter, status int, v any, err error) {

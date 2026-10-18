@@ -5,6 +5,20 @@ import (
 	"time"
 )
 
+// ItemFilter carries the list filters for GET /items. Empty fields are
+// ignored. AssignedTo may be a user id, "me" (resolved by the service), or
+// "unassigned" for items whose open activity has no assignee.
+type ItemFilter struct {
+	Search     string // substring match on title/description (trigram-backed ILIKE)
+	Priority   string // urgent | high | medium | low
+	Status     string // open | closed
+	WorkflowID string
+	StageID    string // current stage
+	AssignedTo string // user id | me | unassigned
+	Sort       string // created_at | updated_at | title | priority
+	Order      string // asc | desc
+}
+
 // ItemRequest is the body for Create and Update.
 // Version is required on Update for optimistic concurrency control.
 // ClosedAt: send "close" to close the item, "reopen" to reopen it, or omit/empty to leave as-is.
@@ -34,16 +48,6 @@ type Item struct {
 	ClosedAt       *time.Time      `json:"closed_at"`
 }
 
-// ItemChange is one record in item_changes (a single version bump with a diff payload).
-type ItemChange struct {
-	ID        int64           `json:"id"`
-	ItemID    string          `json:"item_id"`
-	Version   int64           `json:"version"`
-	ActorID   string          `json:"actor_id"`
-	Changes   json.RawMessage `json:"changes"`
-	CreatedAt time.Time       `json:"created_at"`
-}
-
 // ItemStageActivity is one record in item_stage_activity.
 type ItemStageActivity struct {
 	ID             int64      `json:"id"`
@@ -67,16 +71,85 @@ type ItemStageActivity struct {
 
 // CompleteActivityRequest is the body for POST /items/{id}/activity/complete.
 type CompleteActivityRequest struct {
-	Note string `json:"note"`
+	Note    string `json:"note"`
+	Version int64  `json:"version"`
 }
 
 // ApproveActivityRequest is the body for POST /items/{id}/activity/approve.
 type ApproveActivityRequest struct {
 	Approved bool   `json:"approved"`
 	Note     string `json:"note"`
+	Version  int64  `json:"version"`
 }
 
 // ReassignActivityRequest is the body for POST /items/{id}/activity/reassign.
 type ReassignActivityRequest struct {
-	UserID string `json:"user_id"`
+	UserID  string `json:"user_id"`
+	Version int64  `json:"version"`
+}
+
+// SetStatusRequest is the body for POST /items/{id}/status.
+type SetStatusRequest struct {
+	Closed  bool  `json:"closed"`
+	Version int64 `json:"version"`
+}
+
+// VersionRequest is the body for actions that only need an expected version
+// (advance and claim).
+type VersionRequest struct {
+	Version int64 `json:"version"`
+}
+
+// TimelineUserRef is a display reference to a user in the timeline.
+type TimelineUserRef struct {
+	ID       string `json:"id"`
+	Username string `json:"username"`
+}
+
+// TimelineActivity is the current state of the activity row referenced by a
+// timeline entry. The client reads fields according to the entry's type.
+type TimelineActivity struct {
+	ID             int64            `json:"id"`
+	StageID        string           `json:"stage_id"`
+	TeamID         string           `json:"team_id"`
+	TeamName       string           `json:"team_name"`
+	AssignedUserID *string          `json:"assigned_user_id"`
+	AssignedUser   *TimelineUserRef `json:"assigned_user,omitempty"`
+	CompletionNote *string          `json:"completion_note"`
+	ApprovalStatus *string          `json:"approval_status"`
+	ApprovalNote   *string          `json:"approval_note"`
+}
+
+// TimelineEntry is one merged row of the item timeline.
+type TimelineEntry struct {
+	Version   int64             `json:"version"`
+	CreatedAt time.Time         `json:"created_at"`
+	Actor     TimelineUserRef   `json:"actor"`
+	Type      string            `json:"type"`
+	Changes   json.RawMessage   `json:"changes"`
+	Activity  *TimelineActivity `json:"activity,omitempty"`
+}
+
+// TimelinePage is the response for GET /items/{id}/timeline.
+type TimelinePage struct {
+	Entries           []TimelineEntry `json:"entries"`
+	NextBeforeVersion *int64          `json:"next_before_version"`
+}
+
+// AttentionItem is a compact item summary for the dashboard attention widget.
+// Reason is "approval" when the caller is the stage approver of a pending
+// activity, or "assigned" when the caller holds the open activity.
+type AttentionItem struct {
+	ID        string `json:"id"`
+	Title     string `json:"title"`
+	Priority  string `json:"priority"`
+	StageName string `json:"stage_name"`
+	Reason    string `json:"reason"`
+}
+
+// Attention is the response for GET /items/attention.
+type Attention struct {
+	AssignedTotal int             `json:"assigned_total"`
+	ApprovalTotal int             `json:"approval_total"`
+	Items         []AttentionItem `json:"items"`
 }

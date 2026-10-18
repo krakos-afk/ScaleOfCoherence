@@ -3,7 +3,7 @@ import { useState } from 'react'
 // ─── Types ────────────────────────────────────────────────────────────────────
 
 export type Workflow = { id: string; name: string }
-export type Stage = { id: string; name: string; workflowId: string; workflowName: string }
+export type Stage = { id: string; name: string; workflowId: string; workflowName: string; approver_user_id?: string | null; position?: number; assigned_team_id?: string | null }
 
 export type ItemData = {
   id: string
@@ -36,6 +36,8 @@ type Props = {
   item: ItemData | null
   workflows: Workflow[]
   stages: Stage[]
+  /** Only admins may change the closed/reopen state from this form. */
+  canClose: boolean
   saving: boolean
   error: string
   onSubmit: (values: ItemFormValues) => void
@@ -64,7 +66,7 @@ function kvToRecord(pairs: KVPair[]): Record<string, string> {
 
 // ─── Component ────────────────────────────────────────────────────────────────
 
-export default function ItemForm({ item, workflows, stages, saving, error, onSubmit, onCancel }: Props) {
+export default function ItemForm({ item, workflows, stages, canClose, saving, error, onSubmit, onCancel }: Props) {
   const isNew = item === null
 
   // Derive initial workflowId from item's workflow_id or stage's workflow
@@ -198,8 +200,8 @@ export default function ItemForm({ item, workflows, stages, saving, error, onSub
               </div>
             </div>
 
-            {/* Closed status — only on edit */}
-            {!isNew && (
+            {/* Closed status — only on edit, and only for admins */}
+            {!isNew && canClose && (
               <div className="form-group">
                 <label>Status</label>
                 <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>

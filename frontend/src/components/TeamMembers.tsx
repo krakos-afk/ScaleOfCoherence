@@ -1,5 +1,8 @@
 import { useEffect, useState } from 'react'
 import { request, canManageTeam, userId as getMyId } from '../api/client'
+import SortableTh from './SortableTh'
+import { useDebouncedValue } from '../hooks/useDebouncedValue'
+import { useSort } from '../hooks/useSort'
 
 const LIMIT = 10
 
@@ -24,8 +27,15 @@ export default function TeamMembers({
   const [page, setPage] = useState(1)
   const [tick, setTick] = useState(0)
   const [error, setError] = useState('')
+  const [q, setQ] = useState('')
+  const search = useDebouncedValue(q).trim()
+  const { sort, order, toggle } = useSort('username', 'asc')
   const base = `/teams/${team.id}/members`
   const reload = () => setTick((t) => t + 1)
+  const changeSort = (field: string) => {
+    toggle(field)
+    setPage(1)
+  }
 
   // Whether the current user is a leader of THIS team (checked after members load).
   const myId = getMyId()
@@ -34,8 +44,10 @@ export default function TeamMembers({
   const showControls = canEdit || isTeamLeader
 
   useEffect(() => {
+    const params = new URLSearchParams({ page: String(page), limit: String(LIMIT), sort, order })
+    if (search) params.set('q', search)
     const requests: [Promise<{ data: Member[]; total: number }>, Promise<OrgUser[]>] = [
-      request<{ data: Member[]; total: number }>('GET', `${base}?page=${page}&limit=${LIMIT}`),
+      request<{ data: Member[]; total: number }>('GET', `${base}?${params}`),
       // Only admins/leaders can list org users — gracefully degrade to empty if forbidden.
       canManageTeam()
         ? request<OrgUser[]>('GET', '/auth/users')
@@ -49,7 +61,7 @@ export default function TeamMembers({
         setError('')
       })
       .catch((err: Error) => setError(err.message))
-  }, [base, page, tick])
+  }, [base, page, tick, search, sort, order])
 
   const pages = Math.max(1, Math.ceil(total / LIMIT))
   const selected = userId || users[0]?.id || ''
@@ -77,6 +89,16 @@ export default function TeamMembers({
 
       {error && <div className="alert alert-error">{error}</div>}
 
+      <div className="list-toolbar">
+        <input
+          type="search"
+          className="search-input"
+          placeholder="Search members…"
+          value={q}
+          onChange={(e) => { setQ(e.target.value); setPage(1) }}
+        />
+      </div>
+
       <div className="card">
         {showControls && users.length > 0 && (
           <form
@@ -93,9 +115,10 @@ export default function TeamMembers({
                 </option>
               ))}
             </select>
-            <select value={role} onChange={(e) => setRole(e.target.value)} style={{ maxWidth: 120 }}>
+            <select value={role} onChange={(e) => setRole(e.target.value)} style={{ maxWidth: 140 }}>
               <option value="viewer">viewer</option>
               <option value="editor">editor</option>
+              <option value="commentator">commentator</option>
               <option value="leader">leader</option>
             </select>
             <button type="submit" className="btn btn-primary" disabled={!selected} style={{ whiteSpace: 'nowrap' }}>
@@ -107,8 +130,8 @@ export default function TeamMembers({
         <table>
           <thead>
             <tr>
-              <th>Username</th>
-              <th>Role</th>
+              <SortableTh label="Username" field="username" sort={sort} order={order} onSort={changeSort} />
+              <SortableTh label="Role" field="role" sort={sort} order={order} onSort={changeSort} />
               {showControls && <th style={{ width: 1 }} />}
             </tr>
           </thead>
@@ -137,7 +160,7 @@ export default function TeamMembers({
             {members.length === 0 && (
               <tr>
                 <td colSpan={showControls ? 3 : 2} style={{ textAlign: 'center', color: 'var(--text-muted)', padding: '32px' }}>
-                  No members yet
+                  {search ? 'No matches for your search.' : 'No members yet'}
                 </td>
               </tr>
             )}

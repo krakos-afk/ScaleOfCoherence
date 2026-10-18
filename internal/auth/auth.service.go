@@ -69,12 +69,22 @@ func (s *Service) CreateUser(ctx context.Context, email, username, password, use
 	return s.repo.CreateMember(ctx, caller.OrgID, email, username, hash, usertype)
 }
 
-func (s *Service) ListUsers(ctx context.Context) ([]dto.OrgUser, error) {
+func (s *Service) ListUsers(ctx context.Context, p dto.ListParams) ([]dto.OrgUser, error) {
 	caller, err := s.requireAdmin(ctx)
 	if err != nil {
 		return nil, err
 	}
-	return s.repo.ListUsers(ctx, caller.OrgID)
+	return s.repo.ListUsers(ctx, caller.OrgID, p)
+}
+
+// ListUserNames is the org-scoped name directory. Any authenticated member may
+// call it; it never leaves the caller's org and exposes only id and username.
+func (s *Service) ListUserNames(ctx context.Context) ([]dto.UserName, error) {
+	caller, err := identity.GetIdentity(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return s.repo.ListUserNames(ctx, caller.OrgID)
 }
 
 // DeleteUser lets a user delete themselves, or an admin delete anyone in their org.
@@ -114,6 +124,7 @@ func (s *Service) issue(u dto.AuthUser) (string, error) {
 	c := dto.Claims{
 		OrgID:    u.OrgID,
 		Usertype: u.Usertype,
+		Username: u.Username,
 		RegisteredClaims: jwt.RegisteredClaims{
 			Subject:   u.ID,
 			IssuedAt:  jwt.NewNumericDate(time.Now()),

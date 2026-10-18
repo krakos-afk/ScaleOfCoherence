@@ -37,8 +37,16 @@ type OrgUser struct {
 	Usertype string `json:"usertype"`
 }
 
+// UserName is the minimal org-scoped directory entry any member may read to
+// render usernames instead of raw user ids.
+type UserName struct {
+	ID       string `json:"id"`
+	Username string `json:"username"`
+}
+
 type AuthUser struct {
 	ID           string
+	Username     string
 	PasswordHash string
 	OrgID        string
 	Usertype     string
@@ -47,5 +55,6 @@ type AuthUser struct {
 type Claims struct {
 	OrgID    string `json:"org"`
 	Usertype string `json:"typ"`
+	Username string `json:"unm"`
 	jwt.RegisteredClaims
 }

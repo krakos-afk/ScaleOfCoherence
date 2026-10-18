@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { request, userId, usertype, isAdmin, canManageTeam, canWrite } from '../api/client'
+import { request, userId, username, usertype, isAdmin, canManageTeam } from '../api/client'
 import CrudTable from '../components/CrudTable'
 import TeamMembers from '../components/TeamMembers'
 import WorkflowStages from '../components/WorkflowStages'
@@ -11,29 +11,22 @@ import Items from './Items'
 
 function navItems(): Item[] {
   const role = usertype()
-  switch (role) {
-    case 'admin':
-      return [
-        { key: 'dashboard', label: 'Dashboard' },
-        { key: 'items', label: 'Items' },
-        { key: 'teams', label: 'Teams' },
-        { key: 'workflows', label: 'Workflows' },
-        { key: 'users', label: 'Users' },
-      ]
-    case 'leader':
-      return [
-        { key: 'dashboard', label: 'Dashboard' },
-        { key: 'items', label: 'Items' },
-        { key: 'teams', label: 'Teams' },
-        { key: 'workflows', label: 'Workflows' },
-      ]
-    default:
-      // editor / viewer
-      return [
-        { key: 'dashboard', label: 'Dashboard' },
-        { key: 'items', label: 'Items' },
-      ]
+  if (role === 'admin') {
+    return [
+      { key: 'dashboard', label: 'Dashboard' },
+      { key: 'items', label: 'Items' },
+      { key: 'teams', label: 'Teams' },
+      { key: 'workflows', label: 'Workflows' },
+      { key: 'users', label: 'Users' },
+    ]
   }
+  // Regular member. Team roles (leader/editor/viewer) gate actions server-side.
+  return [
+    { key: 'dashboard', label: 'Dashboard' },
+    { key: 'items', label: 'Items' },
+    { key: 'teams', label: 'Teams' },
+    { key: 'workflows', label: 'Workflows' },
+  ]
 }
 
 const bottomItems: Item[] = [
@@ -45,6 +38,26 @@ const bottomItems: Item[] = [
 
 type Stats = { items: number; teams: number; workflows: number; stages: number }
 
+type AttentionItem = {
+  id: string
+  title: string
+  priority: string
+  stage_name: string
+  reason: 'approval' | 'assigned'
+}
+
+type Attention = {
+  assigned_total: number
+  approval_total: number
+  items: AttentionItem[]
+}
+
+const priorityClass = (p: string) =>
+  p === 'urgent' ? 'badge-urgent'
+  : p === 'high' ? 'badge-high'
+  : p === 'medium' ? 'badge-medium'
+  : 'badge-low'
+
 // ── Component ─────────────────────────────────────────────────────────────────
 
 export default function Home({ onLogout }: { onLogout: () => void }) {
@@ -52,12 +65,26 @@ export default function Home({ onLogout }: { onLogout: () => void }) {
   const [team, setTeam] = useState<{ id: string; name: string } | null>(null)
   const [workflow, setWorkflow] = useState<{ id: string; name: string } | null>(null)
   const [stats, setStats] = useState<Stats>({ items: 0, teams: 0, workflows: 0, stages: 0 })
+  const [attention, setAttention] = useState<Attention | null>(null)
+  const [itemTab, setItemTab] = useState<'all' | 'my'>('all')
   const [error, setError] = useState('')
+  // Username comes from the token claim; tokens issued before it existed fall
+  // back to the org name directory.
+  const [profileName, setProfileName] = useState(username())
 
   const role = usertype()
   const admin = isAdmin()
   const manageTeam = canManageTeam()
-  const write = canWrite()
+
+  useEffect(() => {
+    if (profileName) return
+    request<{ id: string; username: string }[]>('GET', '/auth/user-names')
+      .then((users) => {
+        const me = users.find((u) => u.id === userId())
+        if (me) setProfileName(me.username)
+      })
+      .catch(() => {/* non-fatal */})
+  }, [profileName])
 
   useEffect(() => {
     const loadWorkflows = request<{ data: { id: string; name: string }[] }>('GET', '/workflows?page=1&limit=100')
@@ -79,6 +106,10 @@ export default function Home({ onLogout }: { onLogout: () => void }) {
         setStats({ items, teams, workflows, stages })
       })
       .catch((err: Error) => setError(err.message))
+
+    request<Attention>('GET', '/items/attention?limit=5')
+      .then(setAttention)
+      .catch(() => {/* non-fatal */})
   }, [])
 
   const deleteAccount = async () => {
@@ -92,13 +123,17 @@ export default function Home({ onLogout }: { onLogout: () => void }) {
   }
 
   // ── Role badge helper ──────────────────────────────────────────────────────
-  const roleBadgeClass = () => {
-    switch (role) {
-      case 'admin': return 'badge-urgent'
-      case 'leader': return 'badge-high'
-      case 'editor': return 'badge-medium'
-      default: return 'badge-low'
-    }
+  const roleBadgeClass = () => (role === 'admin' ? 'badge-urgent' : 'badge-low')
+
+  const navigate = (key: string) => {
+    if (key !== 'teams') setTeam(null)
+    if (key !== 'workflows') setWorkflow(null)
+    setPage(key)
+  }
+
+  const openMyWork = () => {
+    setItemTab('my')
+    navigate('items')
   }
 
   // ── Page views ─────────────────────────────────────────────────────────────
@@ -131,14 +166,47 @@ export default function Home({ onLogout }: { onLogout: () => void }) {
             <div className="stat-value">{stats.stages}</div>
           </div>
         </div>
-        <div style={{ color: 'var(--text-muted)', fontSize: 13 }}>
+
+        <div className="attention-card">
+          <div className="attention-head">
+            <h3>What needs your attention</h3>
+            {attention && attention.items.length > 0 && (
+              <span className="page-meta">
+                {attention.assigned_total} assigned
+                {' · '}
+                {attention.approval_total} awaiting approval
+              </span>
+            )}
+          </div>
+          {attention === null ? (
+            <div className="attention-empty">Loading…</div>
+          ) : attention.items.length === 0 ? (
+            <div className="attention-empty">You're all caught up.</div>
+          ) : (
+            <>
+              <ul className="attention-list">
+                {attention.items.map((it) => (
+                  <li key={it.id} className="attention-row" onClick={openMyWork}>
+                    <span className={`badge ${priorityClass(it.priority)}`} style={{ textTransform: 'capitalize' }}>
+                      {it.priority}
+                    </span>
+                    <span className="attention-title" title={it.title}>{it.title}</span>
+                    <span className="td-muted attention-stage">{it.stage_name}</span>
+                    <span className={`attention-reason ${it.reason}`}>
+                      {it.reason === 'approval' ? 'Approval' : 'Assigned'}
+                    </span>
+                  </li>
+                ))}
+              </ul>
+              <button className="btn-link" onClick={openMyWork}>View my work →</button>
+            </>
+          )}
+        </div>
+
+        <div style={{ color: 'var(--text-muted)', fontSize: 13, marginTop: 16 }}>
           {admin
             ? 'You have admin access. Use the sidebar to manage items, teams, workflows, and users.'
-            : manageTeam
-            ? 'You are a team leader. Use the sidebar to manage your teams, items, and workflows.'
-            : write
-            ? 'You are an editor. Use the sidebar to browse and edit items.'
-            : 'You are a viewer. Use the sidebar to browse items.'}
+            : 'You are a member. Team roles (leader/editor/viewer) control what you can do within each team.'}
         </div>
       </>
     ),
@@ -182,7 +250,7 @@ export default function Home({ onLogout }: { onLogout: () => void }) {
     ),
 
     // ── Items (dedicated component with full field support) ────────────────
-    items: <Items />,
+    items: <Items initialTab={itemTab} />,
 
     // ── Settings ───────────────────────────────────────────────────────────
     settings: (
@@ -223,6 +291,12 @@ export default function Home({ onLogout }: { onLogout: () => void }) {
           <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
             <div>
               <div style={{ fontSize: 11, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '.05em', color: 'var(--text-muted)', marginBottom: 6 }}>
+                Username
+              </div>
+              <div style={{ fontSize: 14, fontWeight: 600 }}>{profileName || '—'}</div>
+            </div>
+            <div>
+              <div style={{ fontSize: 11, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '.05em', color: 'var(--text-muted)', marginBottom: 6 }}>
                 Role
               </div>
               <span className={`badge ${roleBadgeClass()}`} style={{ textTransform: 'capitalize' }}>{role}</span>
@@ -241,12 +315,6 @@ export default function Home({ onLogout }: { onLogout: () => void }) {
         </div>
       </>
     ),
-  }
-
-  const navigate = (key: string) => {
-    if (key !== 'teams') setTeam(null)
-    if (key !== 'workflows') setWorkflow(null)
-    setPage(key)
   }
 
   return (

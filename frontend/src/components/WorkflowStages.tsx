@@ -37,7 +37,7 @@ export default function WorkflowStages({ workflow, onBack }: { workflow: { id: s
   const [saving, setSaving] = useState(false)
   const base = `/workflows/${workflow.id}/stages`
 
-  // Only admins and leaders may create/edit/delete stages.
+  // Only admins may create/edit/delete stages.
   const canEdit = canManageTeam()
   // Only admins can list all org users (for approver picker).
   const showUsers = isAdmin()
