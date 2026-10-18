@@ -48,6 +48,7 @@ CREATE TABLE workflow_stages (
                                  UNIQUE (workflow_id, position) DEFERRABLE INITIALLY DEFERRED,
                                  UNIQUE (workflow_id, name),
                                  UNIQUE (org_id, id),
+                                 UNIQUE (org_id, id, workflow_id),
 
                                  CHECK (
                                      (approval_required AND approver_user_id IS NOT NULL)
@@ -61,6 +62,7 @@ CREATE TABLE items (
                        title TEXT NOT NULL,
                        description TEXT NOT NULL DEFAULT '',
                        org_id UUID NOT NULL REFERENCES organization(id) ON DELETE RESTRICT,
+                       workflow_id UUID,
                        current_stage_id UUID,
                        priority TEXT NOT NULL DEFAULT 'medium'
                            CHECK (priority IN ('urgent', 'high', 'medium', 'low')),
@@ -72,9 +74,12 @@ CREATE TABLE items (
                        created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
                        updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
                        closed_at TIMESTAMPTZ,
+
                        UNIQUE (org_id, id),
-                       FOREIGN KEY (org_id, current_stage_id)
-                           REFERENCES workflow_stages(org_id, id),
+
+                       FOREIGN KEY (org_id, current_stage_id, workflow_id)
+                           REFERENCES workflow_stages(org_id, id, workflow_id),
+
                        FOREIGN KEY (org_id, created_by)
                            REFERENCES organization_members(org_id, user_id) ON DELETE RESTRICT
 );
@@ -162,7 +167,10 @@ CREATE TABLE item_stage_activity (
 
                                      CHECK ((released_at IS NULL) = (release_reason IS NULL)),
 
-                                     CHECK (completed_at IS NULL OR (released_at IS NOT NULL AND release_reason = 'completed'))
+                                     CHECK (
+                                         completed_at IS NULL
+                                             OR (released_at IS NOT NULL AND release_reason = 'completed')
+                                         )
 );
 
 CREATE INDEX idx_item_changes_item_id_created_at

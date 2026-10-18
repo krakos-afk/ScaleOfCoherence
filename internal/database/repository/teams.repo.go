@@ -98,6 +98,19 @@ func (r *TeamRepo) ListMembers(ctx context.Context, orgID, teamID string, limit,
 	return page, rows.Err()
 }
 
+// GetMemberRole returns the role of userID in the given team, or ErrNotFound if
+// they are not a member.
+func (r *TeamRepo) GetMemberRole(ctx context.Context, orgID, teamID, userID string) (string, error) {
+	var role string
+	err := r.db.QueryRowContext(ctx,
+		`SELECT role FROM team_members WHERE org_id = $1 AND team_id = $2 AND user_id = $3`,
+		orgID, teamID, userID).Scan(&role)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", ErrNotFound
+	}
+	return role, err
+}
+
 // AddMember fails with ErrNotFound if the team or user is not in the org.
 func (r *TeamRepo) AddMember(ctx context.Context, orgID, teamID, userID, role string) error {
 	_, err := r.db.ExecContext(ctx,

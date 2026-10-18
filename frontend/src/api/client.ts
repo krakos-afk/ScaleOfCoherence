@@ -26,3 +26,11 @@ const claims = (): Record<string, string> => {
 
 export const userId = () => claims().sub ?? ''
 export const usertype = () => claims().typ ?? ''
+export const isAdmin = () => usertype() === 'admin'
+export const isLeader = () => usertype() === 'leader'
+export const isEditor = () => usertype() === 'editor'
+export const isViewer = () => usertype() === 'viewer'
+/** Admin or leader — can manage teams, delete items, etc. */
+export const canManageTeam = () => isAdmin() || isLeader()
+/** Admin, leader, or editor — can create/edit items. */
+export const canWrite = () => ['admin', 'leader', 'editor'].includes(usertype())

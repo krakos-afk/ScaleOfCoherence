@@ -18,7 +18,7 @@ func NewService(repo *repository.TeamRepo) *Service {
 }
 
 func (s *Service) Create(ctx context.Context, name string) (dto.Team, error) {
-	id, err := admin(ctx)
+	id, err := adminOrLeader(ctx)
 	if err != nil {
 		return dto.Team{}, err
 	}
@@ -41,14 +41,22 @@ func (s *Service) Get(ctx context.Context, teamID string) (dto.Team, error) {
 	return s.repo.Get(ctx, id.OrgID, teamID)
 }
 
+// Update allows org-admins unconditionally, or a leader who is a member of
+// the team being updated.
 func (s *Service) Update(ctx context.Context, teamID, name string) (dto.Team, error) {
-	id, err := admin(ctx)
+	id, err := identity.GetIdentity(ctx)
 	if err != nil {
 		return dto.Team{}, err
+	}
+	if !id.IsAdmin() {
+		if err := s.requireTeamLeader(ctx, id, teamID); err != nil {
+			return dto.Team{}, err
+		}
 	}
 	return s.repo.Update(ctx, id.OrgID, teamID, name)
 }
 
+// Delete is restricted to org-admins only.
 func (s *Service) Delete(ctx context.Context, teamID string) error {
 	id, err := admin(ctx)
 	if err != nil {
@@ -57,6 +65,7 @@ func (s *Service) Delete(ctx context.Context, teamID string) error {
 	return s.repo.Delete(ctx, id.OrgID, teamID)
 }
 
+// ListMembers is readable by any authenticated org member.
 func (s *Service) ListMembers(ctx context.Context, teamID string, limit, offset int) (dto.Page[dto.TeamMember], error) {
 	id, err := identity.GetIdentity(ctx)
 	if err != nil {
@@ -68,20 +77,45 @@ func (s *Service) ListMembers(ctx context.Context, teamID string, limit, offset 
 	return s.repo.ListMembers(ctx, id.OrgID, teamID, limit, offset)
 }
 
+// AddMember allows org-admins unconditionally, or a leader of the target team.
 func (s *Service) AddMember(ctx context.Context, teamID, userID, role string) error {
-	id, err := admin(ctx)
+	id, err := identity.GetIdentity(ctx)
 	if err != nil {
 		return err
+	}
+	if !id.IsAdmin() {
+		if err := s.requireTeamLeader(ctx, id, teamID); err != nil {
+			return err
+		}
 	}
 	return s.repo.AddMember(ctx, id.OrgID, teamID, userID, role)
 }
 
+// RemoveMember allows org-admins unconditionally, or a leader of the target team.
 func (s *Service) RemoveMember(ctx context.Context, teamID, userID string) error {
-	id, err := admin(ctx)
+	id, err := identity.GetIdentity(ctx)
 	if err != nil {
 		return err
 	}
+	if !id.IsAdmin() {
+		if err := s.requireTeamLeader(ctx, id, teamID); err != nil {
+			return err
+		}
+	}
 	return s.repo.RemoveMember(ctx, id.OrgID, teamID, userID)
+}
+
+// requireTeamLeader returns ErrForbidden unless the caller holds the "leader"
+// role in the given team (within their org).
+func (s *Service) requireTeamLeader(ctx context.Context, id identity.Identity, teamID string) error {
+	role, err := s.repo.GetMemberRole(ctx, id.OrgID, teamID, id.UserID)
+	if err != nil {
+		return auth.ErrForbidden
+	}
+	if role != "leader" {
+		return auth.ErrForbidden
+	}
+	return nil
 }
 
 func admin(ctx context.Context) (identity.Identity, error) {
@@ -90,6 +124,17 @@ func admin(ctx context.Context) (identity.Identity, error) {
 		return id, err
 	}
 	if !id.IsAdmin() {
+		return id, auth.ErrForbidden
+	}
+	return id, nil
+}
+
+func adminOrLeader(ctx context.Context) (identity.Identity, error) {
+	id, err := identity.GetIdentity(ctx)
+	if err != nil {
+		return id, err
+	}
+	if !id.CanManageTeam() {
 		return id, auth.ErrForbidden
 	}
 	return id, nil

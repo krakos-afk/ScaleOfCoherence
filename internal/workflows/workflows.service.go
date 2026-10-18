@@ -17,6 +17,7 @@ func NewService(repo *repository.WorkflowRepo) *Service {
 	return &Service{repo: repo}
 }
 
+// Create is restricted to admin only — workflows are org-wide structure.
 func (s *Service) Create(ctx context.Context, req dto.WorkflowRequest) (dto.Workflow, error) {
 	id, err := admin(ctx)
 	if err != nil {
@@ -41,6 +42,7 @@ func (s *Service) Get(ctx context.Context, workflowID string) (dto.Workflow, err
 	return s.repo.Get(ctx, id.OrgID, workflowID)
 }
 
+// Update is restricted to admin only.
 func (s *Service) Update(ctx context.Context, workflowID string, req dto.WorkflowRequest) (dto.Workflow, error) {
 	id, err := admin(ctx)
 	if err != nil {
@@ -49,6 +51,7 @@ func (s *Service) Update(ctx context.Context, workflowID string, req dto.Workflo
 	return s.repo.Update(ctx, id.OrgID, workflowID, req)
 }
 
+// Delete is restricted to admin only.
 func (s *Service) Delete(ctx context.Context, workflowID string) error {
 	id, err := admin(ctx)
 	if err != nil {
@@ -76,8 +79,10 @@ func (s *Service) GetStage(ctx context.Context, workflowID, stageID string) (dto
 	return s.repo.GetStage(ctx, id.OrgID, workflowID, stageID)
 }
 
+// CreateStage allows admin or leader — leaders may add stages to workflows
+// that are assigned to their team.
 func (s *Service) CreateStage(ctx context.Context, workflowID string, req dto.StageRequest) (dto.Stage, error) {
-	id, err := admin(ctx)
+	id, err := adminOrLeader(ctx)
 	if err != nil {
 		return dto.Stage{}, err
 	}
@@ -87,16 +92,18 @@ func (s *Service) CreateStage(ctx context.Context, workflowID string, req dto.St
 	return s.repo.CreateStage(ctx, id.OrgID, workflowID, req)
 }
 
+// UpdateStage allows admin or leader.
 func (s *Service) UpdateStage(ctx context.Context, workflowID, stageID string, req dto.StageRequest) (dto.Stage, error) {
-	id, err := admin(ctx)
+	id, err := adminOrLeader(ctx)
 	if err != nil {
 		return dto.Stage{}, err
 	}
 	return s.repo.UpdateStage(ctx, id.OrgID, workflowID, stageID, req)
 }
 
+// DeleteStage allows admin or leader.
 func (s *Service) DeleteStage(ctx context.Context, workflowID, stageID string) error {
-	id, err := admin(ctx)
+	id, err := adminOrLeader(ctx)
 	if err != nil {
 		return err
 	}
@@ -109,6 +116,17 @@ func admin(ctx context.Context) (identity.Identity, error) {
 		return id, err
 	}
 	if !id.IsAdmin() {
+		return id, auth.ErrForbidden
+	}
+	return id, nil
+}
+
+func adminOrLeader(ctx context.Context) (identity.Identity, error) {
+	id, err := identity.GetIdentity(ctx)
+	if err != nil {
+		return id, err
+	}
+	if !id.CanManageTeam() {
 		return id, auth.ErrForbidden
 	}
 	return id, nil

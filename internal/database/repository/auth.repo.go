@@ -8,12 +8,6 @@ import (
 	"ScaleOfCoherence/internal/api/dto"
 )
 
-var (
-	ErrNotFound  = errors.New("not found")
-	ErrDuplicate = errors.New("already exists")
-	ErrInUse     = errors.New("in use")
-)
-
 type AuthRepo struct {
 	db *sql.DB
 }

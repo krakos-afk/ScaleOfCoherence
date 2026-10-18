@@ -45,6 +45,16 @@ func NewRouter(authSvc *auth.Service, teamSvc *teams.Service, itemSvc *items.Ser
 	mux.HandleFunc("GET /items/{id}", ic.Get)
 	mux.HandleFunc("PUT /items/{id}", ic.Update)
 	mux.HandleFunc("DELETE /items/{id}", ic.Delete)
+	mux.HandleFunc("GET /items/{id}/changes", ic.ListChanges)
+	mux.HandleFunc("GET /items/{id}/activity", ic.ListActivity)
+	mux.HandleFunc("GET /items/my", ic.ListMy)
+	mux.HandleFunc("GET /items/{id}/activity/open", ic.GetOpenActivity)
+
+	// Stage activity lifecycle endpoints.
+	mux.HandleFunc("POST /items/{id}/activity/claim", ic.ClaimActivity)
+	mux.HandleFunc("POST /items/{id}/activity/complete", ic.CompleteActivity)
+	mux.HandleFunc("POST /items/{id}/activity/approve", ic.ApproveActivity)
+	mux.HandleFunc("POST /items/{id}/activity/reassign", ic.ReassignActivity)
 
 	wc := controllers.NewWorkflowController(workflowSvc)
 	mux.HandleFunc("POST /workflows", wc.Create)

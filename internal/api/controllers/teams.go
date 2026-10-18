@@ -71,7 +71,7 @@ func (c *TeamController) AddMember(w http.ResponseWriter, r *http.Request) {
 	if req.Role == "" {
 		req.Role = "viewer"
 	}
-	if req.UserID == "" || (req.Role != "viewer" && req.Role != "editor") {
+	if req.UserID == "" || !validMemberRole(req.Role) {
 		http.Error(w, "invalid input", http.StatusBadRequest)
 		return
 	}
@@ -81,6 +81,15 @@ func (c *TeamController) AddMember(w http.ResponseWriter, r *http.Request) {
 
 func (c *TeamController) RemoveMember(w http.ResponseWriter, r *http.Request) {
 	noContent(w, c.svc.RemoveMember(r.Context(), r.PathValue("id"), r.PathValue("userID")))
+}
+
+// validMemberRole reports whether r is an accepted team-member role.
+func validMemberRole(r string) bool {
+	switch r {
+	case "viewer", "editor", "leader":
+		return true
+	}
+	return false
 }
 
 func paging(r *http.Request) (limit, offset int) {

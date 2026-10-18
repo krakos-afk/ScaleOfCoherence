@@ -8,6 +8,7 @@ import (
 
 	"ScaleOfCoherence/internal/api/dto"
 	"ScaleOfCoherence/internal/auth"
+	"ScaleOfCoherence/internal/auth/identity"
 	"ScaleOfCoherence/internal/database/repository"
 )
 
@@ -60,9 +61,9 @@ func (c *AuthController) CreateUser(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if req.Usertype == "" {
-		req.Usertype = "user"
+		req.Usertype = identity.TypeViewer
 	}
-	if req.Email == "" || req.Username == "" || len(req.Password) < 8 || (req.Usertype != "admin" && req.Usertype != "user") {
+	if req.Email == "" || req.Username == "" || len(req.Password) < 8 || !validUsertype(req.Usertype) {
 		http.Error(w, "invalid input", http.StatusBadRequest)
 		return
 	}
@@ -80,6 +81,16 @@ func (c *AuthController) DeleteUser(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
+}
+
+// validUsertype reports whether t is an accepted organisation-level usertype
+// that an admin can assign when creating a user.
+func validUsertype(t string) bool {
+	switch t {
+	case identity.TypeAdmin, identity.TypeLeader, identity.TypeEditor, identity.TypeViewer:
+		return true
+	}
+	return false
 }
 
 func decode(w http.ResponseWriter, r *http.Request, v any) bool {
@@ -100,8 +111,10 @@ func writeError(w http.ResponseWriter, err error) {
 	switch {
 	case errors.Is(err, auth.ErrInvalidCredentials), errors.Is(err, auth.ErrInvalidToken):
 		http.Error(w, err.Error(), http.StatusUnauthorized)
-	case errors.Is(err, auth.ErrForbidden):
+	case errors.Is(err, auth.ErrForbidden), errors.Is(err, repository.ErrForbidden):
 		http.Error(w, err.Error(), http.StatusForbidden)
+	case errors.Is(err, repository.ErrStale):
+		http.Error(w, err.Error(), http.StatusConflict)
 	case errors.Is(err, repository.ErrDuplicate), errors.Is(err, repository.ErrInUse):
 		http.Error(w, err.Error(), http.StatusConflict)
 	case errors.Is(err, repository.ErrNotFound):
