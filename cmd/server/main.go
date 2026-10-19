@@ -60,10 +60,11 @@ func main() {
 	itemSvc := items.NewService(repository.NewItemRepo(db.DB()))
 	workflowSvc := workflows.NewService(repository.NewWorkflowRepo(db.DB()))
 	commentSvc := comments.NewService(repository.NewCommentRepo(db.DB()))
+	idemRepo := repository.NewIdempotencyRepo(db.DB())
 
 	srv := &http.Server{
 		Addr:              ":" + cfg.Port,
-		Handler:           api.NewRouter(authSvc, teamSvc, itemSvc, workflowSvc, commentSvc, db, cfg.SPADir),
+		Handler:           api.NewRouter(authSvc, teamSvc, itemSvc, workflowSvc, commentSvc, idemRepo, db, cfg.SPADir),
 		ReadHeaderTimeout: 5 * time.Second,
 		ReadTimeout:       15 * time.Second,
 		WriteTimeout:      30 * time.Second,
@@ -72,6 +73,8 @@ func main() {
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGTERM, os.Interrupt)
 	defer stop()
+
+	go pruneIdempotencyKeys(ctx, idemRepo)
 
 	errCh := make(chan error, 1)
 	go func() { errCh <- srv.ListenAndServe() }()
@@ -96,5 +99,37 @@ func main() {
 	}
 	if err := db.Close(); err != nil {
 		slog.Error("closing database", "err", err)
+	}
+}
+
+// idempotencyRetention is how long completed or abandoned idempotency keys are
+// kept for replay before cleanup removes them.
+const idempotencyRetention = 24 * time.Hour
+
+// pruneIdempotencyKeys deletes old idempotency keys at boot and hourly until
+// the process shuts down.
+func pruneIdempotencyKeys(ctx context.Context, repo *repository.IdempotencyRepo) {
+	prune := func() {
+		ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
+		defer cancel()
+		n, err := repo.DeleteExpired(ctx, time.Now().Add(-idempotencyRetention))
+		if err != nil {
+			slog.Error("idempotency key cleanup failed", "err", err)
+			return
+		}
+		if n > 0 {
+			slog.Info("idempotency keys pruned", "count", n)
+		}
+	}
+	prune()
+	ticker := time.NewTicker(time.Hour)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			prune()
+		}
 	}
 }

@@ -1,5 +1,5 @@
 import { useEffect, useState, useCallback } from 'react'
-import { request, canWrite, isAdmin } from '../api/client'
+import { request, canWrite, isAdmin, ApiError } from '../api/client'
 import ItemForm, { type ItemData, type ItemFormValues, type Workflow, type Stage } from '../components/ItemForm'
 import ItemDetail from '../components/ItemDetail'
 import SortableTh from '../components/SortableTh'
@@ -202,6 +202,14 @@ export default function Items({ initialTab = 'all' }: { initialTab?: ListTab } =
       closeForm()
       reload()
     } catch (err) {
+      // Stale version: discard the local edit, refresh the list and tell the
+      // user instead of leaving a doomed form open.
+      if (err instanceof ApiError && err.status === 409) {
+        closeForm()
+        reload()
+        setListError('This item changed while you were editing — showing the latest version.')
+        return
+      }
       setFormError((err as Error).message)
     } finally {
       setSaving(false)

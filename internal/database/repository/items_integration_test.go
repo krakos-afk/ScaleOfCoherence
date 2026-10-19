@@ -102,7 +102,7 @@ func quoteIdent(s string) string {
 func resetDB(t *testing.T) {
 	t.Helper()
 	_, err := testDB.Exec(`
-		TRUNCATE item_comments, item_stage_activity, item_changes, items, workflow_stages, workflows,
+		TRUNCATE idempotency_keys, item_comments, item_stage_activity, item_changes, items, workflow_stages, workflows,
 		         team_members, teams, organization_members, users, organization
 		RESTART IDENTITY CASCADE`)
 	if err != nil {

@@ -27,6 +27,7 @@ export default function TeamMembers({
   const [page, setPage] = useState(1)
   const [tick, setTick] = useState(0)
   const [error, setError] = useState('')
+  const [busy, setBusy] = useState(false)
   const [q, setQ] = useState('')
   const search = useDebouncedValue(q).trim()
   const { sort, order, toggle } = useSort('username', 'asc')
@@ -67,6 +68,7 @@ export default function TeamMembers({
   const selected = userId || users[0]?.id || ''
 
   const run = async (fn: () => Promise<unknown>) => {
+    setBusy(true)
     try {
       await fn()
       if (members.length === 1 && page > 1) setPage(page - 1)
@@ -74,6 +76,8 @@ export default function TeamMembers({
       reload()
     } catch (err) {
       setError((err as Error).message)
+    } finally {
+      setBusy(false)
     }
   }
 
@@ -121,8 +125,8 @@ export default function TeamMembers({
               <option value="commentator">commentator</option>
               <option value="leader">leader</option>
             </select>
-            <button type="submit" className="btn btn-primary" disabled={!selected} style={{ whiteSpace: 'nowrap' }}>
-              Add member
+            <button type="submit" className="btn btn-primary" disabled={!selected || busy} style={{ whiteSpace: 'nowrap' }}>
+              {busy ? 'Adding…' : 'Add member'}
             </button>
           </form>
         )}
@@ -149,6 +153,7 @@ export default function TeamMembers({
                         className="btn btn-danger"
                         style={{ fontSize: 12, padding: '4px 10px' }}
                         onClick={() => run(() => request('DELETE', `${base}/${m.user_id}`))}
+                        disabled={busy}
                       >
                         Remove
                       </button>

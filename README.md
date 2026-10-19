@@ -118,6 +118,27 @@ Every setting is validated at startup; the server refuses to boot on bad values.
 
 See `.env.example` for a copy-paste template.
 
+### Retrying requests safely
+
+Item mutations (`POST`/`PUT`/`PATCH`/`DELETE` under `/items`, including
+comments and activity transitions) accept an `Idempotency-Key` header:
+
+```text
+curl -X POST http://localhost:8080/items \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Idempotency-Key: $(uuidgen)" \
+  -H 'Content-Type: application/json' \
+  -d '{"title":"Retry-safe item"}'
+```
+
+- Retrying with the same key and body replays the original response
+  (`Idempotency-Replayed: true`), so a lost response never becomes a
+  duplicate item.
+- The same key with a different body → `422`; a retry while the first request
+  is still running → `409`.
+- Failed server-side requests (5xx) release the key so the retry can proceed.
+  Keys are kept for 24h and pruned hourly.
+
 ## Checks
 
 ```text

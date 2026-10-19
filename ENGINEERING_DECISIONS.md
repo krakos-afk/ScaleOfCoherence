@@ -43,3 +43,28 @@ Every pooled connection carries `lock_timeout=5s`,
 `statement_timeout=15s` and `idle_in_transaction_session_timeout=30s`. Lock and
 statement timeouts map to 503 (`database busy, try again`) instead of surfacing
 as generic 500s: they mean "retry", not "bug".
+
+## Idempotency keys
+
+Item mutations honor an `Idempotency-Key` header, stored per (org, user, key)
+in `idempotency_keys` (migration `000010`). The database is the coordination
+point because retries can land on any replica; no in-process cache can make
+that guarantee. Semantics:
+
+- first request: insert the key with a hash of method + URI + body, run the
+  handler, then store the response;
+- replay (same key, same hash): return the stored status/body with
+  `Idempotency-Replayed: true` without re-executing;
+- same key, different hash: `422` (client bug, not a conflict to resolve);
+- concurrent request with the same key: `409`;
+- 5xx responses delete the key so retries are not poisoned by transient
+  failures; 4xx responses are stored because they are deterministic.
+
+Keys are scoped by organization and user, so keys can collide neither across
+tenants nor across users. Retention is 24h, pruned at boot and hourly by a
+single background loop; the table stays small (one row per retried mutation).
+
+The frontend does not send keys yet: buttons are disabled while a request is
+in flight and 409 conflicts trigger discard-and-refetch, so duplicate writes
+cannot originate from the UI. The keys exist for API clients and future retry
+logic.

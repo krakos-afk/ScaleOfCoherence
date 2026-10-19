@@ -32,9 +32,23 @@ export async function request<T = unknown>(method: string, path: string, body?: 
       parsed && typeof parsed === 'object' && 'error' in parsed
         ? String((parsed as { error: unknown }).error)
         : text || res.statusText
-    throw new ApiError(res.status, message, parsed)
+    throw new ApiError(res.status, friendlyMessage(res, message), parsed)
   }
   return res.status === 204 ? (undefined as T) : res.json()
+}
+
+/** Replaces terse server messages for retryable conditions with clear ones. */
+function friendlyMessage(res: Response, fallback: string): string {
+  if (res.status === 429) {
+    const retry = Number(res.headers.get('Retry-After') ?? '')
+    return Number.isFinite(retry) && retry > 0
+      ? `Too many requests — try again in ${retry}s.`
+      : 'Too many requests — please slow down and try again.'
+  }
+  if (res.status === 503) {
+    return 'The server is busy right now — please try again in a moment.'
+  }
+  return fallback
 }
 
 const claims = (): Record<string, string> => {

@@ -313,12 +313,15 @@ export default function ItemDetail({ itemId, stages, onClose, onItemUpdated }: P
 
   const removeComment = async (commentID: number) => {
     setCommentError('')
+    setCommentBusy(true)
     try {
       await request('DELETE', `/items/${itemId}/comments/${commentID}`)
       setComments((prev) => prev.filter((c) => c.id !== commentID))
       setCommentTotal((t) => Math.max(0, t - 1))
     } catch (err) {
       setCommentError((err as Error).message)
+    } finally {
+      setCommentBusy(false)
     }
   }
 
@@ -900,6 +903,7 @@ export default function ItemDetail({ itemId, stages, onClose, onItemUpdated }: P
                               className="btn btn-ghost"
                               style={{ padding: '2px 8px', fontSize: 11 }}
                               onClick={() => removeComment(c.id)}
+                              disabled={commentBusy}
                               title="Delete comment"
                             >
                               Delete

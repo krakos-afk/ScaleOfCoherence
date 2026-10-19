@@ -15,19 +15,25 @@ See also [ENGINEERING_DECISIONS.md](ENGINEERING_DECISIONS.md) for the *why*, and
 flowchart LR
     UI["React SPA (Vite dev server, or served by the Go server via SPA_DIR)"]
     subgraph server["Go HTTP server (:8080)"]
-        MW["logRequests → SPA fallback → authenticate"] --> MUX["http.ServeMux"] --> CTRL["controllers"] --> SVC["domain services"] --> REPO["repositories"] --> DB["database/sql (pgx driver)"]
+        MW["logRequests → securityHeaders → body limit → SPA fallback → authenticate → idempotency"] --> MUX["http.ServeMux"] --> CTRL["controllers"] --> SVC["domain services"] --> REPO["repositories"] --> DB["database/sql (pgx driver)"]
     end
     UI -->|"REST + Bearer JWT\n(/auth /items /teams /workflows)"| MW
     DB --> PG[("PostgreSQL 17")]
 ```
 
-- Every route except `POST /auth/signup` and `POST /auth/login` sits behind the
-  `authenticate` middleware, which parses the JWT (HS256) and injects an
-  `identity.Identity` into the request context.
+- Every route except the public paths (`POST /auth/signup`, `POST /auth/login`,
+  `GET /healthz`, `GET /readyz`) sits behind the `authenticate` middleware,
+  which parses the JWT (HS256), re-reads the caller's org membership, and
+  injects an `identity.Identity` into the request context.
+- Authenticated `POST/PUT/PATCH/DELETE` requests under `/items` carrying an
+  `Idempotency-Key` header run through the idempotency middleware
+  (`internal/api/idempotency.go`), which replays stored responses or rejects
+  conflicting retries.
 - With `SPA_DIR` set (Docker image), non-API paths are served from the built
   frontend with an `index.html` fallback; API prefixes always go through
   `authenticate` first (`internal/api/handlers.go`).
-- Migrations run automatically at boot (`cmd/server/database.go` → `DatabasePG.Migrate`).
+- Migrations are embedded in the binary (`embed.go`) and applied at boot or via
+  `-migrate-only` (`internal/database/postgres.go`).
 
 ---
 
@@ -160,6 +166,8 @@ erDiagram
     items ||--o{ item_comments : "comments"
     item_changes ||--o{ item_comments : "anchored to version"
     organization_members ||--o{ item_comments : "author_id"
+    organization ||--o{ idempotency_keys : "org_id"
+    users ||--o{ idempotency_keys : "user_id"
 ```
 
 ### Version track (the core invariant)
@@ -189,6 +197,7 @@ item:
 | 000007 | items_search | pg_trgm + item search/filter indexes |
 | 000008 | entity_search | trigram indexes for teams, workflows, users |
 | 000009 | activity_open_index | partial indexes over open activity rows (my-work + pending approvals) |
+| 000010 | idempotency_keys | per-(org, user) idempotency keys for replayable item mutations |
 
 ---
 
@@ -272,6 +281,12 @@ authoritative; the helpers only hide controls.
 - Unknown/invalid resource → `404` (`repository.ErrNotFound`).
 - Insufficient role → `403` (`auth.ErrForbidden`).
 - Duplicate names (teams/workflows/users) → `409` (`repository.ErrDuplicate`).
+- Idempotency key reuse with a different body → `422`
+  (`repository.ErrIdempotencyMismatch`); same key still running → `409`
+  (`repository.ErrIdempotencyInProgress`); replayed request → original status
+  with `Idempotency-Replayed: true`.
+- Database busy (lock/statement timeout) → `503`; oversized body → `413`; rate
+  limit → `429` with `Retry-After`.
 
 ### Search & sort
 
@@ -288,7 +303,9 @@ authoritative; the helpers only hide controls.
 
 | Layer | Location | Notes |
 |---|---|---|
-| Repository integration tests | `internal/database/repository/*_test.go` | `TestMain` creates/drops `scaleco_test`, applies migrations, and skips (exit 0) when Postgres is unreachable. Covers item lifecycle/timeline, comments, filters/search/sort, list search/sort, attention. |
+| Repository integration tests | `internal/database/repository/*_test.go` | `TestMain` creates/drops `scaleco_test`, applies migrations, and skips (exit 0) when Postgres is unreachable. Covers item lifecycle/timeline, comments, filters/search/sort, list search/sort, attention, auth membership, idempotency claims/concurrency/expiry. |
+| API integration tests | `internal/api/integration_test.go` | Full HTTP stack against `scaleco_api_test`: org-isolation table across all endpoints, authorization matrix, idempotency replay end to end. Skips when Postgres is unreachable. |
+| Middleware/unit tests | `internal/api/*_test.go`, `internal/auth`, `internal/config`, `internal/ratelimit`, `internal/database` | Request IDs, security headers, body limit, panic recovery, SPA fallback, health/ready, error mapping, rate limiting, password policy, JWTs, pool settings. |
 | Backend build/vet | `go build ./...`, `go vet ./...` | — |
 | Frontend checks | `npx tsc -b`, `npx eslint src`, `npm run build` | No unit-test suite yet. |
 | Manual smoke | curl scripts against a scratch database | Exercised during development; not committed. |

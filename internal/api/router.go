@@ -22,7 +22,7 @@ var publicPaths = map[string]bool{
 	"/readyz":      true,
 }
 
-func NewRouter(authSvc *auth.Service, teamSvc *teams.Service, itemSvc *items.Service, workflowSvc *workflows.Service, commentSvc *comments.Service, ready Readiness, spaDir string) http.Handler {
+func NewRouter(authSvc *auth.Service, teamSvc *teams.Service, itemSvc *items.Service, workflowSvc *workflows.Service, commentSvc *comments.Service, idemStore IdempotencyStore, ready Readiness, spaDir string) http.Handler {
 	mux := http.NewServeMux()
 	ac := controllers.NewAuthController(authSvc)
 
@@ -83,7 +83,7 @@ func NewRouter(authSvc *auth.Service, teamSvc *teams.Service, itemSvc *items.Ser
 	mux.HandleFunc("PUT /workflows/{id}/stages/{stageID}", wc.UpdateStage)
 	mux.HandleFunc("DELETE /workflows/{id}/stages/{stageID}", wc.DeleteStage)
 
-	handler := withSPA(authenticate(authSvc, mux), spaDir)
+	handler := withSPA(authenticate(authSvc, withIdempotency(idemStore, mux)), spaDir)
 	return withRequestMeta(logRequests(securityHeaders(limitBody(1 << 20)(handler))))
 }
 
