@@ -1,10 +1,8 @@
 package api
 
 import (
-	"log"
 	"net/http"
 	"strings"
-	"time"
 
 	"ScaleOfCoherence/internal/api/controllers"
 	"ScaleOfCoherence/internal/auth"
@@ -15,14 +13,21 @@ import (
 	"ScaleOfCoherence/internal/workflows"
 )
 
+// publicPaths are exact paths that skip authentication: the auth endpoints
+// and the probes, which ingress and orchestrators must reach unauthenticated.
 var publicPaths = map[string]bool{
 	"/auth/login":  true,
 	"/auth/signup": true,
+	"/healthz":     true,
+	"/readyz":      true,
 }
 
-func NewRouter(authSvc *auth.Service, teamSvc *teams.Service, itemSvc *items.Service, workflowSvc *workflows.Service, commentSvc *comments.Service) http.Handler {
+func NewRouter(authSvc *auth.Service, teamSvc *teams.Service, itemSvc *items.Service, workflowSvc *workflows.Service, commentSvc *comments.Service, ready Readiness, spaDir string) http.Handler {
 	mux := http.NewServeMux()
 	ac := controllers.NewAuthController(authSvc)
+
+	mux.HandleFunc("GET /healthz", handleHealth)
+	mux.HandleFunc("GET /readyz", handleReady(ready))
 
 	mux.HandleFunc("POST /auth/signup", ac.Signup)
 	mux.HandleFunc("POST /auth/login", ac.Login)
@@ -78,29 +83,12 @@ func NewRouter(authSvc *auth.Service, teamSvc *teams.Service, itemSvc *items.Ser
 	mux.HandleFunc("PUT /workflows/{id}/stages/{stageID}", wc.UpdateStage)
 	mux.HandleFunc("DELETE /workflows/{id}/stages/{stageID}", wc.DeleteStage)
 
-	return logRequests(authenticate(authSvc, mux))
+	handler := withSPA(authenticate(authSvc, mux), spaDir)
+	return withRequestMeta(logRequests(securityHeaders(limitBody(1 << 20)(handler))))
 }
 
-type statusWriter struct {
-	http.ResponseWriter
-	status int
-}
-
-func (w *statusWriter) WriteHeader(code int) {
-	w.status = code
-	w.ResponseWriter.WriteHeader(code)
-}
-
-func logRequests(next http.Handler) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		sw := &statusWriter{ResponseWriter: w, status: http.StatusOK}
-		start := time.Now()
-		next.ServeHTTP(sw, r)
-		log.Printf("%s %s %d %s", r.Method, r.URL.Path, sw.status, time.Since(start))
-	})
-}
-
-// authenticate gates every route except the public auth endpoints.
+// authenticate gates every route except the public auth endpoints and the
+// health probes, then records the caller in the request metadata for logging.
 func authenticate(authSvc *auth.Service, next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if publicPaths[r.URL.Path] {
@@ -109,14 +97,17 @@ func authenticate(authSvc *auth.Service, next http.Handler) http.Handler {
 		}
 		token, ok := strings.CutPrefix(r.Header.Get("Authorization"), "Bearer ")
 		if !ok {
-			http.Error(w, "unauthorized", http.StatusUnauthorized)
+			controllers.WriteError(w, auth.ErrInvalidToken)
 			return
 		}
-		id, err := authSvc.Authenticate(token)
+		id, err := authSvc.Authenticate(r.Context(), token)
 		if err != nil {
-			http.Error(w, "unauthorized", http.StatusUnauthorized)
+			controllers.WriteError(w, err)
 			return
 		}
+		meta := metaFrom(r.Context())
+		meta.UserID = id.UserID
+		meta.OrgID = id.OrgID
 		next.ServeHTTP(w, r.WithContext(identity.WithIdentity(r.Context(), id)))
 	})
 }

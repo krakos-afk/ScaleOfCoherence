@@ -3,6 +3,9 @@ package auth
 import (
 	"context"
 	"errors"
+	"fmt"
+	"runtime"
+	"strings"
 	"time"
 
 	"ScaleOfCoherence/internal/api/dto"
@@ -17,21 +20,51 @@ var (
 	ErrInvalidCredentials = errors.New("invalid credentials")
 	ErrInvalidToken       = errors.New("invalid token")
 	ErrForbidden          = errors.New("forbidden")
+	ErrWeakPassword       = errors.New("password must be 12-72 bytes")
 )
 
-const tokenTTL = 24 * time.Hour
+const (
+	MinPasswordBytes = 12
+	MaxPasswordBytes = 72 // bcrypt only considers the first 72 bytes
+)
 
 type Service struct {
-	repo   *repository.AuthRepo
-	secret []byte
+	repo    *repository.AuthRepo
+	secret  []byte
+	ttl     time.Duration
+	hashSem chan struct{}
 }
 
-func NewService(repo *repository.AuthRepo, secret string) *Service {
-	return &Service{repo: repo, secret: []byte(secret)}
+func NewService(repo *repository.AuthRepo, secret string, ttl time.Duration) *Service {
+	return &Service{
+		repo:    repo,
+		secret:  []byte(secret),
+		ttl:     ttl,
+		hashSem: make(chan struct{}, runtime.NumCPU()),
+	}
+}
+
+// NormalizeEmail trims and lowercases an address so it matches the
+// lower(email) unique index and the login lookup.
+func NormalizeEmail(email string) string {
+	return strings.ToLower(strings.TrimSpace(email))
+}
+
+// ValidatePassword enforces the length policy before bcrypt sees the input.
+func ValidatePassword(password string) error {
+	n := len([]byte(password))
+	if n < MinPasswordBytes || n > MaxPasswordBytes {
+		return fmt.Errorf("%w (got %d bytes)", ErrWeakPassword, n)
+	}
+	return nil
 }
 
 func (s *Service) Signup(ctx context.Context, orgName, email, username, password string) (string, error) {
-	hash, err := hashPassword(password)
+	email = NormalizeEmail(email)
+	if err := ValidatePassword(password); err != nil {
+		return "", err
+	}
+	hash, err := s.hashPassword(ctx, password)
 	if err != nil {
 		return "", err
 	}
@@ -43,6 +76,7 @@ func (s *Service) Signup(ctx context.Context, orgName, email, username, password
 }
 
 func (s *Service) Login(ctx context.Context, email, password string) (string, error) {
+	email = NormalizeEmail(email)
 	u, err := s.repo.GetByEmail(ctx, email)
 	if errors.Is(err, repository.ErrNotFound) {
 		return "", ErrInvalidCredentials
@@ -50,7 +84,7 @@ func (s *Service) Login(ctx context.Context, email, password string) (string, er
 	if err != nil {
 		return "", err
 	}
-	if bcrypt.CompareHashAndPassword([]byte(u.PasswordHash), []byte(password)) != nil {
+	if err := s.comparePassword(ctx, u.PasswordHash, password); err != nil {
 		return "", ErrInvalidCredentials
 	}
 	return s.issue(u)
@@ -62,7 +96,11 @@ func (s *Service) CreateUser(ctx context.Context, email, username, password, use
 	if err != nil {
 		return dto.AuthUser{}, err
 	}
-	hash, err := hashPassword(password)
+	email = NormalizeEmail(email)
+	if err := ValidatePassword(password); err != nil {
+		return dto.AuthUser{}, err
+	}
+	hash, err := s.hashPassword(ctx, password)
 	if err != nil {
 		return dto.AuthUser{}, err
 	}
@@ -99,14 +137,25 @@ func (s *Service) DeleteUser(ctx context.Context, userID string) error {
 	return s.repo.DeleteUser(ctx, caller.OrgID, userID)
 }
 
-func (s *Service) Authenticate(token string) (identity.Identity, error) {
+// Authenticate validates the token and then re-reads org membership from the
+// database, so deleted or demoted users lose (or gain) access immediately
+// instead of when their token expires. Token claims are UI gating only.
+func (s *Service) Authenticate(ctx context.Context, token string) (identity.Identity, error) {
 	c := &dto.Claims{}
 	t, err := jwt.ParseWithClaims(token, c, func(*jwt.Token) (any, error) { return s.secret, nil },
 		jwt.WithValidMethods([]string{"HS256"}))
-	if err != nil || !t.Valid || c.Subject == "" {
+	if err != nil || !t.Valid || c.Subject == "" || c.OrgID == "" {
 		return identity.Identity{}, ErrInvalidToken
 	}
-	return identity.Identity{UserID: c.Subject, OrgID: c.OrgID, Usertype: c.Usertype}, nil
+
+	usertype, err := s.repo.GetMembership(ctx, c.OrgID, c.Subject)
+	if errors.Is(err, repository.ErrNotFound) {
+		return identity.Identity{}, ErrInvalidToken
+	}
+	if err != nil {
+		return identity.Identity{}, err
+	}
+	return identity.Identity{UserID: c.Subject, OrgID: c.OrgID, Usertype: usertype}, nil
 }
 
 func (s *Service) requireAdmin(ctx context.Context) (identity.Identity, error) {
@@ -128,13 +177,40 @@ func (s *Service) issue(u dto.AuthUser) (string, error) {
 		RegisteredClaims: jwt.RegisteredClaims{
 			Subject:   u.ID,
 			IssuedAt:  jwt.NewNumericDate(time.Now()),
-			ExpiresAt: jwt.NewNumericDate(time.Now().Add(tokenTTL)),
+			ExpiresAt: jwt.NewNumericDate(time.Now().Add(s.ttl)),
 		},
 	}
 	return jwt.NewWithClaims(jwt.SigningMethodHS256, c).SignedString(s.secret)
 }
 
-func hashPassword(p string) (string, error) {
+// hashPassword and comparePassword share a semaphore so a burst of logins can
+// only occupy as many CPUs as the machine has, keeping other requests alive.
+func (s *Service) hashPassword(ctx context.Context, p string) (string, error) {
+	if err := s.acquire(ctx); err != nil {
+		return "", err
+	}
+	defer s.release()
 	b, err := bcrypt.GenerateFromPassword([]byte(p), bcrypt.DefaultCost)
 	return string(b), err
+}
+
+func (s *Service) comparePassword(ctx context.Context, hash, password string) error {
+	if err := s.acquire(ctx); err != nil {
+		return err
+	}
+	defer s.release()
+	return bcrypt.CompareHashAndPassword([]byte(hash), []byte(password))
+}
+
+func (s *Service) acquire(ctx context.Context) error {
+	select {
+	case s.hashSem <- struct{}{}:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+func (s *Service) release() {
+	<-s.hashSem
 }

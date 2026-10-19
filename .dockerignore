@@ -1,0 +1,14 @@
+.git
+.gitignore
+.idea
+.agents
+.gemini
+.env
+tests
+*.md
+compose.dev.yaml
+docker-compose.yml
+Dockerfile
+.dockerignore
+frontend/node_modules
+frontend/dist

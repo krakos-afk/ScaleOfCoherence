@@ -48,6 +48,19 @@ func (r *AuthRepo) CreateMember(ctx context.Context, orgID, email, username, has
 	return u, tx.Commit()
 }
 
+// GetMembership returns the caller's current org-level usertype. It backs the
+// per-request re-read so deleted or demoted users cannot act on stale claims.
+func (r *AuthRepo) GetMembership(ctx context.Context, orgID, userID string) (string, error) {
+	var usertype string
+	err := r.db.QueryRowContext(ctx,
+		`SELECT usertype FROM organization_members WHERE org_id = $1 AND user_id = $2`,
+		orgID, userID).Scan(&usertype)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", ErrNotFound
+	}
+	return usertype, err
+}
+
 func (r *AuthRepo) GetByEmail(ctx context.Context, email string) (dto.AuthUser, error) {
 	var u dto.AuthUser
 	err := r.db.QueryRowContext(ctx, `

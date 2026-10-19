@@ -10,7 +10,7 @@ const fields = {
     ['org_name', 'Organization name', 'text'],
     ['username', 'Username', 'text'],
     ['email', 'Email', 'email'],
-    ['password', 'Password (min 8 chars)', 'password'],
+    ['password', 'Password (min 12 chars)', 'password'],
   ],
 }
 
@@ -49,6 +49,7 @@ export default function AuthForm({ mode, onDone }: { mode: 'login' | 'signup'; o
             type={type}
             placeholder={label}
             required
+            minLength={mode === 'signup' && name === 'password' ? 12 : undefined}
             onChange={(e) => setValues({ ...values, [name]: e.target.value })}
           />
         </div>

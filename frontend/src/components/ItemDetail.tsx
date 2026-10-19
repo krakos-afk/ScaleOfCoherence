@@ -172,13 +172,13 @@ export default function ItemDetail({ itemId, stages, onClose, onItemUpdated }: P
   const [tab, setTab] = useState<'detail' | 'timeline' | 'comments'>('detail')
 
   const load = useCallback(async () => {
-    setError('')
     try {
       const [itemData, timelineData, commentData] = await Promise.all([
         request<ItemFull>('GET', `/items/${itemId}`),
         request<TimelinePage>('GET', `/items/${itemId}/timeline?limit=${TIMELINE_LIMIT}`),
         request<CommentsPage>('GET', `/items/${itemId}/comments?page=1&limit=${COMMENT_PAGE_SIZE}`),
       ])
+      setError('')
       const parsed = {
         ...itemData,
         custom_fields: (typeof itemData.custom_fields === 'string'
@@ -234,6 +234,8 @@ export default function ItemDetail({ itemId, stages, onClose, onItemUpdated }: P
     }
   }, [itemId, stages])
 
+  // fetch-on-mount/prop-change: every setState inside load() runs after an await
+  // eslint-disable-next-line react-hooks/set-state-in-effect
   useEffect(() => { load() }, [load, itemId, stages])
 
   const loadMore = async () => {
