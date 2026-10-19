@@ -25,15 +25,46 @@ previous tag".
 The app is built for these settings:
 
 - Ingress: external, target port 8080, TLS terminated by the platform.
-- Secrets: `JWT_SECRET` (≥ 32 bytes) and the production `DATABASE_URL`
-  (`sslmode=require`) as Container App secrets, referenced as env vars; never
-  baked into the image.
-- `PORT=8080`, `MIGRATE_ON_BOOT=false` (migrations run separately, section 3).
 - Probes: liveness `GET /healthz` (period 10 s), readiness `GET /readyz`
   (period 5 s), startup `GET /healthz` (30 × 3 s).
 - `terminationGracePeriodSeconds: 30` — the server drains in-flight requests
   for up to 25 s on SIGTERM.
 - 1–3 replicas at 1 vCPU / 2 GB each is the tested baseline.
+
+### Environment variables
+
+Required (set as Container App secrets, never baked into the image):
+
+| Variable | Value | Notes |
+|---|---|---|
+| `JWT_SECRET` | random string, ≥ 32 bytes | per environment; rotating it logs everyone out |
+| `DATABASE_URL` | `postgres://user:pass@host:5432/db?sslmode=require` | wins over the `DB_*` parts if both are set |
+
+Recommended for this deployment:
+
+| Variable | Value | Notes |
+|---|---|---|
+| `MIGRATE_ON_BOOT` | `false` | migrations run as a separate step (section 3); leave `true` only for a single-replica app |
+| `PORT` | `8080` | image default; ingress and probes expect it |
+| `JWT_TTL` | `1h` | session token lifetime; image default |
+
+Optional — defaults are fine unless you have a reason (all `DB_*` parts are
+ignored when `DATABASE_URL` is set):
+
+| Variable | Default | Notes |
+|---|---|---|
+| `DB_HOST` / `DB_PORT` | `localhost` / `5432` | DSN parts when `DATABASE_URL` is empty |
+| `DB_USER` / `DB_PASSWORD` / `DB_NAME` | `postgres` / `postgres` / `scaleco` | as above |
+| `DB_SSLMODE` | `disable` | use `require` in production if building the DSN from parts |
+| `DB_MAX_OPEN_CONNS` | `20` | pool size **per replica**; N replicas open up to N × 20 connections |
+| `DB_MAX_IDLE_CONNS` | `20` | as above |
+| `DB_CONN_MAX_LIFETIME` | `30m` | as above |
+| `DB_CONN_MAX_IDLE_TIME` | `5m` | as above |
+
+Do not set `SPA_DIR`: the image points it at the embedded SPA (`/app/web`).
+The lock/statement/idle-in-transaction timeouts (5 s / 15 s / 30 s) and the
+rate limits are compiled in, not environment-tunable; see
+`ENGINEERING_DECISIONS.md` for why.
 
 `/healthz` never touches the database (so a database outage cannot cause
 restart loops); `/readyz` pings it and a replica with a failing readiness
