@@ -81,7 +81,7 @@ logic.
 | Command | Scope |
 |---|---|
 | `go test ./... -count=1` | all Go tests; integration tests create scratch databases (`scaleco_test`, `scaleco_api_test`) and skip (exit 0) when Postgres is unreachable; `TEST_DATABASE_URL` overrides the DSN |
-| `go test -coverpkg=./... -coverprofile=cover.out ./...` | coverage; see `go tool cover -func=cover.out`. Total: **60.0% of statements** (2026-10-19) |
+| `go test -coverpkg=./... -coverprofile=cover.out ./...` | coverage; see `go tool cover -func=cover.out`. Total: **64.8% of statements** (2026-10-19) |
 | `npx tsc -b`, `npx eslint src`, `npm run build` in `frontend/` | frontend types, lint, bundle (no frontend test runner exists) |
 | `docker build .`, `docker compose up` | image/boot smoke, manual (DEPLOYMENT.md §7) |
 
@@ -113,13 +113,16 @@ Postgres service, plus `govulncheck` and `npm audit`.
 | `repository/idempotency_integration_test.go` | `TestIdempotencyClaimLifecycle`, `TestIdempotencyClaimConcurrency` (8 workers, exactly one fresh claim), `TestIdempotencyKeysAreScopedPerOrgAndUser`, `TestIdempotencyDeleteExpired` | DB claim lifecycle, concurrency, tenant/user scoping, retention cleanup query |
 | `database/postgres_integration_test.go` | `TestConnectAppliesPoolLimitsAndTimeouts` | pool limits and per-connection timeouts |
 | `api/integration_test.go` (full router + DB) | `TestOrgIsolationAcrossEndpoints` (21 probes incl. search leakage), `TestAuthorizationMatrix` (admin/member/viewer), `TestIdempotencyEndToEnd` (replay header, single row, 422) | HTTP-level tenant isolation, role matrix enforcement, idempotency across the real stack |
+| `api/journeys_integration_test.go` (full router + DB) | `TestJourneyOrgSetup`, `TestJourneyItemLifecycle`, `TestJourneyApprovalLoop`, `TestJourneyReassign`, `TestJourneyOptimisticConcurrency`, `TestJourneyCloseReopen`, `TestJourneyComments` | end-to-end user workflows: org setup and directory reads, create → claim → complete → advance with dashboard reads and timeline, approval pending/reject/re-approve, reassignment, 409 resync cycle, close/reopen, comment deletion rules |
 
 ## What is covered
 
 Boot-time config validation; authentication (JWT parsing, password policy,
 uniform login failures, email normalization); authorization (membership
 re-read per request, role matrix at HTTP level, org isolation on every
-list/get/search path tested); rate limiting; HTTP hardening (request IDs,
+list/get/search path tested); end-to-end user journeys (org setup, item
+lifecycle, approval loop, reassignment, optimistic-concurrency resync,
+close/reopen, comments); rate limiting; HTTP hardening (request IDs,
 security headers, body limit, panic recovery, probes, SPA fallback, error
 mapping incl. DB timeouts → 503); database invariants (version track,
 triggers, optimistic locking, concurrent claims, comment anchoring); list
@@ -131,13 +134,12 @@ conflict, release, expiry, concurrency, scoping).
 - **Frontend has no automated tests at all.** Only typecheck, lint and build
   run. UI behaviors (409 discard-and-refetch, busy/disabled states, friendly
   429/503 messages, auth form) are verified manually.
-- **Happy paths through HTTP for several endpoints** are never executed in
-  tests: activity transitions (`AdvanceStage`, `CompleteActivity`,
+- **Happy paths through HTTP for a few endpoints** are never executed in
+  tests: `DeleteUser` and `RemoveMember`. The journey tests cover the success
+  paths of the activity lifecycle (`AdvanceStage`, `CompleteActivity`,
   `ApproveActivity`, `ReassignActivity`, `GetOpenActivity`), `ListMy`,
-  `Attention`, `ListUserNames`, `DeleteUser`, `RemoveMember`, `GetStage`.
-  Repository tests cover their data-layer behavior and the authorization
-  matrix covers their 403 paths, but success paths via the real router are
-  exercised only by manual smoke runs.
+  `Attention`, `ListUserNames`, `GetStage`, comments and item CRUD through
+  the real router.
 - **`cmd/server`** (`main`, `pruneIdempotencyKeys`) and the `Migrate`/`Ping`
   wrappers have 0% coverage; the cleanup query is tested, the background loop
   that calls it is not.

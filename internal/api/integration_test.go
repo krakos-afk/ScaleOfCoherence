@@ -140,6 +140,9 @@ type apiClient struct {
 	t     *testing.T
 	base  string
 	token string
+	// xff, when set, is sent as X-Forwarded-For. Journey tests use a unique
+	// value so the per-IP auth rate limiters do not see them as one client.
+	xff string
 }
 
 func (c apiClient) do(method, path string, body any) (int, []byte) {
@@ -170,6 +173,9 @@ func (c apiClient) doFull(method, path string, body any, idemKey string) (int, h
 	}
 	if c.token != "" {
 		req.Header.Set("Authorization", "Bearer "+c.token)
+	}
+	if c.xff != "" {
+		req.Header.Set("X-Forwarded-For", c.xff)
 	}
 	if idemKey != "" {
 		req.Header.Set("Idempotency-Key", idemKey)

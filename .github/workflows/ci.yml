@@ -1,24 +1,31 @@
-name: CI
+name: CI/CD
 
-# On-demand checks: Actions -> CI -> Run workflow.
-
-on: workflow_dispatch
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
 
 permissions:
   contents: read
 
 concurrency:
   group: ci-${{ github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  IMAGE: ${{ vars.AZURE_ACR_NAME }}.azurecr.io/scaleco
 
 jobs:
   backend:
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     services:
       postgres:
         image: postgres:17-alpine
         env:
           POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: scaleco_test
         ports:
           - 5432:5432
         options: >-
@@ -35,7 +42,9 @@ jobs:
           go-version-file: go.mod
           cache: true
       - name: gofmt
-        run: test -z "$(gofmt -l cmd internal)"
+        run: |
+          files="$(gofmt -l cmd internal)"
+          if [ -n "$files" ]; then echo "$files"; exit 1; fi
       - name: build
         run: go build ./...
       - name: vet
@@ -47,6 +56,7 @@ jobs:
 
   frontend:
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     defaults:
       run:
         working-directory: frontend
@@ -69,7 +79,56 @@ jobs:
 
   image:
     runs-on: ubuntu-latest
+    timeout-minutes: 20
+    needs: [backend, frontend]
+    permissions:
+      contents: read
+      id-token: write
     steps:
       - uses: actions/checkout@v4
-      - name: docker build
-        run: docker build -t scaleco:ci .
+      - uses: docker/setup-buildx-action@v3
+      - name: azure login
+        if: github.event_name != 'pull_request'
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+      - name: acr login
+        if: github.event_name != 'pull_request'
+        run: az acr login --name ${{ vars.AZURE_ACR_NAME }}
+      - name: build and push
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: ${{ github.event_name != 'pull_request' }}
+          tags: |
+            ${{ env.IMAGE }}:${{ github.sha }}
+            ${{ env.IMAGE }}:latest
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    needs: image
+    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+    permissions:
+      contents: read
+      id-token: write
+    concurrency:
+      group: deploy-production
+      cancel-in-progress: false
+    steps:
+      - name: azure login
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+      - name: deploy
+        run: |
+          az containerapp update \
+            --name ${{ vars.AZURE_CONTAINER_APP }} \
+            --resource-group ${{ vars.AZURE_RESOURCE_GROUP }} \
+            --image ${{ env.IMAGE }}:${{ github.sha }}
