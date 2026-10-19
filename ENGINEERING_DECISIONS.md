@@ -144,7 +144,7 @@ conflict, release, expiry, concurrency, scoping).
 - **Migrations**: only fresh-database boot to the latest version is tested. No
   test upgrades a populated database from an older version, and there is no
   rollback test (migrations are forward-only by policy).
-- **Load and performance**: the validation plan in `Scalability.md` §8 has not
+- **Load and performance**: the validation plan in `Scalability.md` §6 has not
   been executed; there is no benchmark or soak test in the repo.
 - **Container behavior**: CI only runs `docker build`. Startup probes, graceful
   drain on SIGTERM, and `/readyz` under a stopped database were verified
