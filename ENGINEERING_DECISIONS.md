@@ -1,76 +1,87 @@
 # Engineering Decisions
 
+The core design choices, in brief:
 
+1. **Versioned items with one history track.** Every mutation bumps
+   `items.version` with a conditional update in the same transaction that
+   writes its `item_changes` row, so writes are atomic and history has no gaps.
+   Stage activity is merged into that history; comments are anchored to the same
+   `(org_id, item_id, version)` track but returned as their own feed and never
+   bump the version. Stale writes are rejected with `409` (see Optimistic
+   concurrency).
+2. **Multi-tenant isolation with layered authorization.** Every row carries
+   `org_id`; org usertypes (`admin`, `user`) combine with per-team roles
+   (`viewer`, `editor`, `commentator`, `leader`). Each endpoint enforces the
+   caller's membership and relevant role, including claim/complete/approve/
+   reassign/advance and close/reopen.
+3. **Team-owned workflow stages.** The model is org → teams and workflows →
+   stages → items: stages are ordered and each is assigned to a team, and items
+   sit on a stage. Any editor or leader on that team may claim the open
+   activity, keeping assignment flexible; a stage can optionally require an
+   approver. Tighter stage-to-role restrictions are a later refinement.
+4. **No async user-facing features.** There is no queue or worker tier because
+   no feature needs one (bulk imports are not implemented); the only background
+   work is idempotency-key pruning, described below.
+5. **Text-only custom fields in the UI.** The frontend models them as
+   `Record<string, string>`. The API and database accept any JSON object, so
+   TEXT is a product convention, not a server-side constraint.
+6. **Attention-first dashboard.** `/items/attention` ranks the work assigned to
+   the caller plus approvals waiting on them, so the dashboard answers "what
+   needs me now".
 
 ---
+
 # Known TradeOffs and Limitations
-The system currently has several implementation lacking 
 
-## Configuration and secrets
+The trade-offs behind them, and why they are acceptable now:
 
-All configuration is loaded and validated once at startup (`internal/config`).
-`JWT_SECRET` is required (>= 32 bytes) and never has a default; the server
-refuses to boot without it. `-migrate-only` lets deployments run migrations as
-a separate job so replicas can start with `MIGRATE_ON_BOOT=false`, which is
-required for side-by-side rollouts.
-
-## Authorization re-read
-
-Every authenticated request re-reads the caller's org membership from the
-database rather than trusting the `typ` claim, so deleted users lose access and
-demotions take effect immediately. The cost is one indexed lookup per request;
-token claims are UI gating only. A short-TTL in-process cache is the next step
-if that lookup shows up in profiles (see Scalability.md).
-
-## Rate limiting
-
-Login and signup are rate-limited per client IP and per email with in-memory
-token buckets (`internal/ratelimit`, `golang.org/x/time/rate`; chosen because
-the standard library has no token bucket with retry-after math). Limits are
-**per replica**: behind N replicas the effective allowance is N times the
-configured rate. Acceptable at the current replica count; a shared
-Redis-backed limiter is the upgrade path. Client IPs come from the first
-X-Forwarded-For hop, so ingress must overwrite, not append, the header.
-
-## Graceful shutdown and probes
-
-On SIGTERM/SIGINT the server stops accepting connections, drains in-flight
-requests for up to 25 s, then closes the database pool; the container gets a
-30 s stop grace period. `/healthz` is liveness only (never touches the
-database, so a database outage cannot cause restart loops); `/readyz` pings the
-database and returns 503 when it is unreachable.
-
-## Database guardrails
-
-Every pooled connection carries `lock_timeout=5s`,
-`statement_timeout=15s` and `idle_in_transaction_session_timeout=30s`. Lock and
-statement timeouts map to 503 (`database busy, try again`) instead of surfacing
-as generic 500s: they mean "retry", not "bug".
-
-## Idempotency keys
-
-Item mutations honor an `Idempotency-Key` header, stored per (org, user, key)
-in `idempotency_keys` (migration `000010`). The database is the coordination
-point because retries can land on any replica; no in-process cache can make
-that guarantee. Semantics:
-
-- first request: insert the key with a hash of method + URI + body, run the
-  handler, then store the response;
-- replay (same key, same hash): return the stored status/body with
-  `Idempotency-Replayed: true` without re-executing;
-- same key, different hash: `422` (client bug, not a conflict to resolve);
-- concurrent request with the same key: `409`;
-- 5xx responses delete the key so retries are not poisoned by transient
-  failures; 4xx responses are stored because they are deterministic.
-
-Keys are scoped by organization and user, so keys can collide neither across
-tenants nor across users. Retention is 24h, pruned at boot and hourly by a
-single background loop; the table stays small (one row per retried mutation).
-
-The frontend does not send keys yet: buttons are disabled while a request is
-in flight and 409 conflicts trigger discard-and-refetch, so duplicate writes
-cannot originate from the UI. The keys exist for API clients and future retry
-logic.
+1. **Startup validation over partial configuration.** All configuration is
+   loaded and validated once at startup (`internal/config`); `JWT_SECRET` is
+   required (≥ 32 bytes) with no default, so a misconfigured server refuses to
+   boot. `-migrate-only` applies migrations as a separate job, so replicas can
+   start with `MIGRATE_ON_BOOT=false` for side-by-side rollouts.
+2. **Optimistic concurrency, with stale views.** Only the request holding the
+   current item version wins; later ones get `409` with the current version and
+   must refetch. Writes stay lock-free, but a user on a stale view can lose an
+   edit attempt. There is no SSE or push channel yet, so a conflict surfaces
+   only on submit; the frontend discards local state and refetches.
+3. **Membership re-read over trusting the token.** Every authenticated request
+   re-reads the caller's org membership from the database instead of trusting
+   the `typ` claim, so deleted users lose access and demotions apply
+   immediately. The cost is one indexed lookup per request; claims are UI
+   gating only, and a short-TTL cache is the next step if the lookup shows in
+   profiles (see Scalability.md).
+4. **Per-replica rate limits over shared state.** Login and signup use
+   in-memory token buckets per client IP and email (`internal/ratelimit`,
+   `golang.org/x/time/rate`; the standard library has no token bucket with
+   retry-after math). Limits are per replica, so N replicas allow N times the
+   configured rate; acceptable at the current replica count, with a shared
+   Redis-backed limiter as the upgrade path. Client IPs come from the first
+   `X-Forwarded-For` hop, so ingress must overwrite, not append, the header.
+5. **Drain and split probes.** On SIGTERM/SIGINT the server stops accepting
+   connections, drains in-flight requests for up to 25 s, then closes the pool;
+   the container has a 30 s stop grace period. `/healthz` is liveness only and
+   never touches the database, so an outage cannot cause restart loops;
+   `/readyz` pings it and returns `503` while it is unreachable.
+6. **Database guardrails over generic errors.** Every pooled connection carries
+   `lock_timeout=5s`, `statement_timeout=15s` and
+   `idle_in_transaction_session_timeout=30s`. Lock and statement timeouts map
+   to `503` (`database busy, try again`) rather than `500`s, because they mean
+   "retry", not "bug".
+7. **Database-coordinated idempotency.** Item mutations honor an
+   `Idempotency-Key`, stored per `(org_id, user_id, key)` in
+   `idempotency_keys` (migration `000010`); the database coordinates because
+   retries can land on any replica. The first request stores a hash of method +
+   URI + body and then the response; a replay (same key and hash) returns the
+   stored response with `Idempotency-Replayed: true` without re-executing; a
+   different hash returns `422`; a concurrent duplicate returns `409`. `5xx`
+   responses release the key so transient failures are retryable, while `4xx`
+   responses are stored because they are deterministic. Keys are isolated per
+   org and user, and pruned after 24h at boot and hourly.
+8. **Idempotency is API-only for now.** The frontend does not send keys: it
+   disables buttons while a request is in flight and discards state on `409`,
+   so duplicate writes cannot originate from the UI. The keys exist for API
+   clients and future retry logic.
 
 ---
 
@@ -83,7 +94,7 @@ logic.
 | `go test ./... -count=1` | all Go tests; integration tests create scratch databases (`scaleco_test`, `scaleco_api_test`) and skip (exit 0) when Postgres is unreachable; `TEST_DATABASE_URL` overrides the DSN |
 | `go test -coverpkg=./... -coverprofile=cover.out ./...` | coverage; see `go tool cover -func=cover.out`. Total: **64.8% of statements** (2026-10-19) |
 | `npx tsc -b`, `npx eslint src`, `npm run build` in `frontend/` | frontend types, lint, bundle (no frontend test runner exists) |
-| `docker build .`, `docker compose up` | image/boot smoke, manual (DEPLOYMENT.md §7) |
+| `docker build .`, `docker compose up` | image/boot smoke, manual (DEPLOYMENT.md) |
 
 CI (`.github/workflows/ci.yml`) runs all of the above against an ephemeral
 Postgres service, plus `govulncheck` and `npm audit`.
@@ -117,29 +128,18 @@ Postgres service, plus `govulncheck` and `npm audit`.
 
 ## What is covered
 
-Boot-time config validation; authentication (JWT parsing, password policy,
-uniform login failures, email normalization); authorization (membership
-re-read per request, role matrix at HTTP level, org isolation on every
-list/get/search path tested); end-to-end user journeys (org setup, item
-lifecycle, approval loop, reassignment, optimistic-concurrency resync,
-close/reopen, comments); rate limiting; HTTP hardening (request IDs,
-security headers, body limit, panic recovery, probes, SPA fallback, error
-mapping incl. DB timeouts → 503); database invariants (version track,
-triggers, optimistic locking, concurrent claims, comment anchoring); list
-search/sort/pagination; attention queries; idempotency (claim, replay,
-conflict, release, expiry, concurrency, scoping).
+The inventories above cover the decision points in this document: config
+validation, authentication, layered authorization and tenant isolation, the
+version/history invariants, the end-to-end journeys, rate limiting, HTTP
+hardening and error mapping, list/attention queries, and idempotency.
 
 ## What is not covered
 
 - **Frontend has no automated tests at all.** Only typecheck, lint and build
   run. UI behaviors (409 discard-and-refetch, busy/disabled states, friendly
   429/503 messages, auth form) are verified manually.
-- **Happy paths through HTTP for a few endpoints** are never executed in
-  tests: `DeleteUser` and `RemoveMember`. The journey tests cover the success
-  paths of the activity lifecycle (`AdvanceStage`, `CompleteActivity`,
-  `ApproveActivity`, `ReassignActivity`, `GetOpenActivity`), `ListMy`,
-  `Attention`, `ListUserNames`, `GetStage`, comments and item CRUD through
-  the real router.
+- **HTTP success paths for `DeleteUser` and `RemoveMember`** are not tested;
+  the other endpoints' success paths are exercised by the journey tests.
 - **`cmd/server`** (`main`, `pruneIdempotencyKeys`) and the `Migrate`/`Ping`
   wrappers have 0% coverage; the cleanup query is tested, the background loop
   that calls it is not.
@@ -152,7 +152,7 @@ conflict, release, expiry, concurrency, scoping).
   hardware.
 - **Container behavior**: CI only runs `docker build`. Startup probes, graceful
   drain on SIGTERM, and `/readyz` under a stopped database were verified
-  manually during Phase 1, not automated.
+  manually, not automated.
 - **Concurrent duplicate idempotent requests at HTTP level**: concurrency is
   tested at the repository layer, not through the router.
 - **Rate limiter edge cases**: `X-Forwarded-For` parsing and multi-replica

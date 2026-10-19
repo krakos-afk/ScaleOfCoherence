@@ -35,7 +35,7 @@ through configurable stages:
   work plus pending approvals).
 
 The Project uses Go as the server, postgres for the database, and React+Typescript for the frontend. \
-Hosted on Azure Container Apps — SPA and API in one container -> [Deployment runbook](DEPLOYMENT.md).
+Hosted on Azure Container Apps — SPA and API in one container -> [Deployment](DEPLOYMENT.md).
 
 ## Tech stack
 
