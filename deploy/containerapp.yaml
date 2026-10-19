@@ -1,0 +1,73 @@
+# Azure Container Apps template for ScaleOfCoherence.
+#
+# Rendered by deploy/provision.sh, do not create directly: placeholders in the
+# form __NAME__ are substituted from the script's environment. Keep secrets out
+# of git; the values below are injected at apply time.
+type: Microsoft.App/containerApps
+name: __APP_NAME__
+location: __LOCATION__
+properties:
+  managedEnvironmentId: __ENV_ID__
+  configuration:
+    activeRevisionsMode: Multiple # staged rollouts need named revisions
+    ingress:
+      external: true
+      targetPort: 8080
+      transport: auto
+      allowInsecure: false
+    secrets:
+      - name: jwt-secret
+        value: __JWT_SECRET__
+      - name: database-url
+        value: __DATABASE_URL__
+      - name: ghcr-token
+        value: __GHCR_TOKEN__
+    registries:
+      - server: ghcr.io
+        username: __GHCR_USER__
+        passwordSecretRef: ghcr-token
+  template:
+    containers:
+      - name: app
+        image: __IMAGE__
+        env:
+          - name: PORT
+            value: "8080"
+          - name: MIGRATE_ON_BOOT
+            value: "false" # migrations run as a dedicated deploy step
+          - name: JWT_SECRET
+            secretRef: jwt-secret
+          - name: DATABASE_URL
+            secretRef: database-url
+        probes:
+          - type: Startup
+            httpGet:
+              path: /healthz
+              port: 8080
+            initialDelaySeconds: 2
+            periodSeconds: 3
+            failureThreshold: 30
+          - type: Liveness
+            httpGet:
+              path: /healthz
+              port: 8080
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          - type: Readiness
+            httpGet:
+              path: /readyz
+              port: 8080
+            periodSeconds: 5
+            failureThreshold: 3
+        resources:
+          cpu: 1.0
+          memory: 2Gi
+    scale:
+      minReplicas: 1
+      maxReplicas: 3
+      rules:
+        - name: http
+          http:
+            metadata:
+              concurrentRequests: "100"
+    terminationGracePeriodSeconds: 30 # server drains for 25s
