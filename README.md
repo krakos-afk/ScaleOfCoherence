@@ -179,3 +179,9 @@ The rest is deliberately boring stuff: plain `database/sql`, a hand-rolled route
 fetch client, authorization enforced in the domain services/repositories rather
 than in UI code. See [DEPENDENCY_MAP.md](DEPENDENCY_MAP.md) for how it fits
 together and [ENGINEERING_DECISIONS.md](ENGINEERING_DECISIONS.md) for the why and tradeoffs.
+
+## Original data model and flows
+
+The data model and flows as designed at the start of the project:
+
+![ScaleOfCoherence data model and flows](flow.svg)
