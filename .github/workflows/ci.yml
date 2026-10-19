@@ -1,9 +1,8 @@
 name: CI
 
-on:
-  push:
-    branches: [main]
-  pull_request:
+# On-demand checks: Actions -> CI -> Run workflow.
+
+on: workflow_dispatch
 
 permissions:
   contents: read

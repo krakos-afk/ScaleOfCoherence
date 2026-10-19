@@ -5,11 +5,9 @@ name: Deploy
 #   with 0% traffic → wait for /readyz → shift 100% traffic.
 # Requires the repository secrets and OIDC federated credential described in
 # DEPLOYMENT.md and a Container App already provisioned by deploy/provision.sh.
+# Triggered manually: Actions -> Deploy -> Run workflow.
 
-on:
-  push:
-    branches: [main]
-  workflow_dispatch:
+on: workflow_dispatch
 
 permissions:
   contents: read

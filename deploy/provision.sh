@@ -102,4 +102,4 @@ FQDN=$(az containerapp show \
   --query properties.configuration.ingress.fqdn --output tsv)
 echo "==> done. endpoint: https://$FQDN"
 echo "    check:    curl -fsS https://$FQDN/healthz && curl -fsS https://$FQDN/readyz"
-echo "    roll out: push to main (CI runs deploy.yml) or see DEPLOYMENT.md"
+echo "    roll out: run the Deploy workflow manually (Actions -> Deploy -> Run workflow), see DEPLOYMENT.md"

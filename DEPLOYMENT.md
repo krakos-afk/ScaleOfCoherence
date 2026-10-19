@@ -6,15 +6,15 @@ Frontend assets and migrations ship inside the image, so there is nothing else
 to deploy.
 
 - `deploy/provision.sh` — one-time (and safe-to-rerun) Azure provisioning.
-- `.github/workflows/deploy.yml` — staged rollout on every push to `main`.
-- `.github/workflows/ci.yml` — gofmt/vet/tests/govulncheck, tsc/eslint/audit,
-  Docker build.
+- `.github/workflows/deploy.yml` — staged rollout, triggered manually
+  (Actions → Deploy → Run workflow).
+- `.github/workflows/ci.yml` — on-demand checks: gofmt/vet/tests/govulncheck,
+  tsc/eslint/audit, Docker build.
 
 ## 1. Release flow
 
 ```text
-push to main
-  → CI (ci.yml): build, vet, test, govulncheck, tsc, eslint, npm audit, image build
+Actions → Deploy → Run workflow
   → build image and push ghcr.io/<owner>/<repo>:<sha>
   → migrate job:  docker run <image> -migrate-only   (against production DB)
   → deploy job:   new revision at 0% traffic
@@ -30,6 +30,8 @@ down-migrations".
 
 ### Why this shape
 
+- **Both workflows are manual** (`workflow_dispatch`): a release is a
+  deliberate action, not a side effect of pushing a branch.
 - **Traffic shift is an explicit step** rather than "latest revision takes
   over": readiness probes alone can flap, and named revisions with pinned
   traffic make rollback a one-line `traffic set` instead of a redeploy.
@@ -111,12 +113,12 @@ revision. The template configures:
 
 ## 4. Release checklist
 
-Before merging to `main`:
+Before running the Deploy workflow:
 
-- [ ] CI green on the branch (`ci.yml`).
+- [ ] CI run green on the commit (`ci.yml`, triggered manually).
 - [ ] New migrations are additive and numbered sequentially (`000011+`).
 - [ ] If env vars changed: update `README.md` config table, `.env.example`,
-      `deploy/containerapp.yaml`, and repo secrets in the same PR.
+      `deploy/containerapp.yaml`, and repo secrets in the same commit.
 - [ ] `docker build . && docker run` smoke-tested locally if Dockerfile,
       dependencies, or boot path changed.
 
