@@ -3,151 +3,88 @@
 ScaleOfCoherence runs as a single Go container (API + embedded SPA + embedded
 migrations) on **Azure Container Apps**, backed by managed **PostgreSQL**.
 Frontend assets and migrations ship inside the image, so there is nothing else
-to deploy.
+to deploy. Deployment is done manually; CI (`.github/workflows/ci.yml`) only
+runs the checks and never pushes or deploys anything.
 
-- `deploy/provision.sh` — one-time (and safe-to-rerun) Azure provisioning.
-- `.github/workflows/deploy.yml` — staged rollout, triggered manually
-  (Actions → Deploy → Run workflow).
-- `.github/workflows/ci.yml` — on-demand checks: gofmt/vet/tests/govulncheck,
-  tsc/eslint/audit, Docker build.
+## 1. Image
 
-## 1. Release flow
-
-```text
-Actions → Deploy → Run workflow
-  → build image and push ghcr.io/<owner>/<repo>:<sha>
-  → migrate job:  docker run <image> -migrate-only   (against production DB)
-  → deploy job:   new revision at 0% traffic
-                  poll the revision's /readyz until 200 (max 5 min)
-                  shift 100% traffic to the new revision
-  → on failure:   the unhealthy revision is deactivated, traffic stays on the old one
-```
-
-Migrations are forward-only and must stay backward compatible with the
-currently running revision (add columns/tables; never drop or rename in the
-same release). Rollback is therefore always "shift traffic back", never "run
-down-migrations".
-
-### Why this shape
-
-- **Both workflows are manual** (`workflow_dispatch`): a release is a
-  deliberate action, not a side effect of pushing a branch.
-- **Traffic shift is an explicit step** rather than "latest revision takes
-  over": readiness probes alone can flap, and named revisions with pinned
-  traffic make rollback a one-line `traffic set` instead of a redeploy.
-- **Migrations run as a separate job**, not at app boot (`MIGRATE_ON_BOOT=false`
-  in production): boot-time migration couples schema change to replica start
-  order and retry storms, and a migration failure would crash-loop every
-  replica. A failed migration job stops the rollout before any replica sees
-  the new binary.
-- **OIDC federated credentials** keep long-lived cloud secrets out of GitHub.
-- **Image tags are commit SHAs** (never `latest`), so any revision in the
-  portal can be traced to a commit.
-- **Deployment concurrency is not cancelled in progress**
-  (`cancel-in-progress: false`): aborting mid-rollout could leave traffic
-  unpinned.
-
-## 2. Environments and secrets
-
-| Name | Kind | Used by | Notes |
-|---|---|---|---|
-| `AZURE_CLIENT_ID` | repo secret | deploy job | federated identity (OIDC, no client secret) |
-| `AZURE_TENANT_ID` | repo secret | deploy job | |
-| `AZURE_SUBSCRIPTION_ID` | repo secret | deploy job | |
-| `AZURE_APP_NAME` | repo variable | deploy job | e.g. `scaleco` |
-| `AZURE_RESOURCE_GROUP` | repo variable | deploy job | e.g. `rg-scaleco` |
-| `DATABASE_URL` | repo secret | migrate job | production DSN, `sslmode=require` |
-| `JWT_SECRET` | repo secret | migrate job | must match the Container App secret |
-| `GHCR_TOKEN` | script env only | provision.sh | PAT with `read:packages` |
-
-Create the OIDC federated credential once (no long-lived Azure secrets):
+Build and push per commit, tagged with the commit SHA:
 
 ```bash
-az ad app create --display-name scaleco-deploy
-APP_ID=$(az ad app list --display-name scaleco-deploy --query '[0].appId' -o tsv)
-az ad sp create --id "$APP_ID"
-
-az ad app federated-credential create --id "$APP_ID" --parameters '{
-  "name": "github-main",
-  "issuer": "https://token.actions.githubusercontent.com",
-  "subject": "repo:<owner>/<repo>:ref:refs/heads/main",
-  "audiences": ["api://AzureADTokenExchange"]
-}'
-
-az role assignment create --assignee "$APP_ID" \
-  --role "Contributor" --scope "/subscriptions/<subscription-id>"
+IMAGE=ghcr.io/<owner>/<repo>:$(git rev-parse HEAD)
+docker build -t "$IMAGE" .
+docker push "$IMAGE"
 ```
 
-Set the GitHub secrets/variables above to the printed `APP_ID`, tenant and
-subscription IDs.
+Any registry works; private registries need credentials configured on the
+Container App. Never deploy `latest`: SHA tags make rollback "redeploy the
+previous tag".
 
-## 3. First-time provisioning
+## 2. Container App configuration
+
+The app is built for these settings:
+
+- Ingress: external, target port 8080, TLS terminated by the platform.
+- Secrets: `JWT_SECRET` (≥ 32 bytes) and the production `DATABASE_URL`
+  (`sslmode=require`) as Container App secrets, referenced as env vars; never
+  baked into the image.
+- `PORT=8080`, `MIGRATE_ON_BOOT=false` (migrations run separately, section 3).
+- Probes: liveness `GET /healthz` (period 10 s), readiness `GET /readyz`
+  (period 5 s), startup `GET /healthz` (30 × 3 s).
+- `terminationGracePeriodSeconds: 30` — the server drains in-flight requests
+  for up to 25 s on SIGTERM.
+- 1–3 replicas at 1 vCPU / 2 GB each is the tested baseline.
+
+`/healthz` never touches the database (so a database outage cannot cause
+restart loops); `/readyz` pings it and a replica with a failing readiness
+probe receives no traffic.
+
+## 3. Migrations
+
+Migrations are forward-only and additive: the currently running revision and
+the next one must both work against the same schema, so never drop or rename
+in the same release. Rollback is redeploying the previous image, never running
+"down" migrations.
+
+Apply migrations before rolling out the new revision, as a separate step:
 
 ```bash
-export RESOURCE_GROUP=rg-scaleco
-export APP_NAME=scaleco
-export LOCATION=westeurope
-export CONTAINERAPP_ENV=cae-scaleco
-export IMAGE=ghcr.io/<owner>/<repo>:<sha>   # any tag pushed by CI
-export GHCR_USER=<owner>
-export GHCR_TOKEN=<PAT with read:packages>
-export DATABASE_URL='postgres://scaleco:<password>@<host>:5432/scaleco?sslmode=require'
-export JWT_SECRET=$(openssl rand -base64 48)
-
-az login
-bash deploy/provision.sh
+docker run --rm \
+  -e DATABASE_URL='postgres://...prod...?sslmode=require' \
+  -e JWT_SECRET='<same secret as the app>' \
+  ghcr.io/<owner>/<repo>:<sha> -migrate-only
 ```
 
-`provision.sh` creates the resource group, the Container Apps environment, and
-the app from `deploy/containerapp.yaml`, then pins 100% of traffic to the first
-revision. The template configures:
-
-- **Liveness**: `GET /healthz` (process is up), 10 s period.
-- **Readiness**: `GET /readyz` (database reachable, migrations applied), 5 s
-  period — replicas take no traffic until it returns 200.
-- **Startup**: `GET /healthz`, 30 × 3 s (image start + migration check).
-- `terminationGracePeriodSeconds: 30` so in-flight requests drain (server
-  drains for up to 25 s on SIGTERM).
-- Multiple-revision mode for staged rollouts, 1–3 replicas with HTTP
-  concurrency scale rule.
+A failed migration stops the release before any replica sees the new binary.
+Keep `MIGRATE_ON_BOOT` false with multiple replicas and run the command above
+once per release.
 
 ## 4. Release checklist
 
-Before running the Deploy workflow:
+Before:
 
 - [ ] CI run green on the commit (`ci.yml`, triggered manually).
-- [ ] New migrations are additive and numbered sequentially (`000011+`).
-- [ ] If env vars changed: update `README.md` config table, `.env.example`,
-      `deploy/containerapp.yaml`, and repo secrets in the same commit.
-- [ ] `docker build . && docker run` smoke-tested locally if Dockerfile,
-      dependencies, or boot path changed.
+- [ ] New migrations additive and numbered sequentially (`000011+`).
+- [ ] Env/secret changes applied to the Container App.
 
-After `deploy.yml` finishes:
+Deploy:
 
-- [ ] `curl -fsS https://<fqdn>/healthz` → `{"status":"ok"}`.
-- [ ] `curl -fsS https://<fqdn>/readyz` → 200 (`{"status":"ready"}`).
-- [ ] `az containerapp revision list -n $APP_NAME -g $RESOURCE_GROUP -o table`
-      shows the new revision `Active` / 100%.
-- [ ] Log in once through the SPA (SPA served from the same origin).
-- [ ] Spot-check one mutation (create item) and one admin action.
-- [ ] Old revision remains `Active` (rollback target) until the next release.
+- [ ] Build and push the SHA-tagged image; run `-migrate-only` against prod.
+- [ ] Update the Container App to the new image tag.
+- [ ] Wait for the new revision to report ready (portal or `az containerapp
+      revision list`).
+
+After:
+
+- [ ] `curl -fsS https://<fqdn>/healthz` and `/readyz` both return 200.
+- [ ] Log in once through the SPA and create one item.
+- [ ] Note the previous image tag: that is the rollback target.
 
 ## 5. Rollback
 
-```bash
-# list revisions; the previous healthy one has the previous r<suffix>
-az containerapp revision list -n "$APP_NAME" -g "$RESOURCE_GROUP" \
-  --query '[].{name:name, traffic:properties.trafficWeight, active:properties.active}' -o table
-
-# shift all traffic back
-az containerapp ingress traffic set -n "$APP_NAME" -g "$RESOURCE_GROUP" \
-  --revision-weight "<app>--<previous-suffix>=100"
-```
-
-Because migrations are additive, the previous revision keeps working against
-the migrated schema. If the bad revision is also broken for direct FQDN
-traffic (e.g. a probe loop), deactivate it:
-`az containerapp revision deactivate -n <app>--<suffix> -g $RESOURCE_GROUP`.
+Redeploy the previous image tag. If the bad revision is not receiving traffic
+yet, it can simply be deactivated. Because migrations are additive, the
+previous revision keeps working against the migrated schema.
 
 ## 6. Health endpoints, errors and logs
 
@@ -155,19 +92,14 @@ traffic (e.g. a probe loop), deactivate it:
 |---|---|---|
 | `/healthz` 200 | process alive | — |
 | `/readyz` 200 | DB reachable, migrations applied | — |
-| `/readyz` 503 | DB down, credentials wrong, or migrations pending | check DATABASE_URL secret, Postgres status; readiness gates traffic automatically |
+| `/readyz` 503 | DB down, credentials wrong, or migrations pending | check `DATABASE_URL` secret and Postgres status |
 | `503 {"error":"database busy, try again"}` | lock/statement timeout (5 s / 15 s) | transient; clients retry (frontend shows a friendly message) |
 | `429` with `Retry-After` | rate limit (login/signup) | expected under abuse; tune limits in `internal/ratelimit` if too strict |
-| `422/409` on retried mutation | idempotency key reused with a different/live request | client bug; see README "Retrying requests safely" |
+| `422/409` on a retried mutation | idempotency key reused with a different or still-running request | client bug; see README "Retrying requests safely" |
 
-Logs (structured JSON on stdout via `logRequests`):
-
-```bash
-az containerapp logs show -n "$APP_NAME" -g "$RESOURCE_GROUP" --follow
-```
-
-Every request log line carries `request_id`; responses echo it in the
-`X-Request-ID` header, so a report can be traced to a log entry directly.
+Logs are structured JSON on stdout; every request line carries `request_id`,
+echoed as `X-Request-ID` on responses, so a report can be traced to a log
+entry directly.
 
 ## 7. Local production-shaped run
 
