@@ -1,5 +1,8 @@
 # Engineering Decisions
 
+
+
+---
 # Known TradeOffs and Limitations
 The system currently has several implementation lacking 
 
@@ -69,28 +72,6 @@ in flight and 409 conflicts trigger discard-and-refetch, so duplicate writes
 cannot originate from the UI. The keys exist for API clients and future retry
 logic.
 
-## Deployment pipeline
+---
 
-`main` deploys itself in three ordered jobs (`.github/workflows/deploy.yml`):
-image build/push to GHCR tagged with the commit SHA, migrations via
-`docker run <image> -migrate-only`, then a new Container Apps revision that
-receives traffic only after its own `/readyz` returns 200. Traffic shifting is
-an explicit step rather than "latest revision takes over" for two reasons:
-readiness probes alone can flap, and keeping named revisions with pinned
-traffic makes rollback a one-line `traffic set` instead of a redeploy.
-
-Migrations run as a separate process, not at app boot (`MIGRATE_ON_BOOT=false`
-in production): boot-time migration couples schema change to replica start
-order and retry storms, and a migration failure would crash-loop every
-replica. In the pipeline a failed migration stops the rollout before any
-replica sees the new binary.
-
-The workflow authenticates to Azure with OIDC federated credentials (no
-long-lived cloud secrets in GitHub) and pins image tags to the commit SHA
-(never `latest`), so any revision in the portal can be traced to a commit.
-Deployment concurrency is not cancelled in progress (`cancel-in-progress:
-false`): aborting mid-rollout could leave traffic unpinned.
-
-Migrations are forward-only and additive. Both the current and the previous
-revision must run against the same schema, which makes rollback purely a
-traffic operation.
+# Tests

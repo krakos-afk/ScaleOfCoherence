@@ -28,6 +28,23 @@ currently running revision (add columns/tables; never drop or rename in the
 same release). Rollback is therefore always "shift traffic back", never "run
 down-migrations".
 
+### Why this shape
+
+- **Traffic shift is an explicit step** rather than "latest revision takes
+  over": readiness probes alone can flap, and named revisions with pinned
+  traffic make rollback a one-line `traffic set` instead of a redeploy.
+- **Migrations run as a separate job**, not at app boot (`MIGRATE_ON_BOOT=false`
+  in production): boot-time migration couples schema change to replica start
+  order and retry storms, and a migration failure would crash-loop every
+  replica. A failed migration job stops the rollout before any replica sees
+  the new binary.
+- **OIDC federated credentials** keep long-lived cloud secrets out of GitHub.
+- **Image tags are commit SHAs** (never `latest`), so any revision in the
+  portal can be traced to a commit.
+- **Deployment concurrency is not cancelled in progress**
+  (`cancel-in-progress: false`): aborting mid-rollout could leave traffic
+  unpinned.
+
 ## 2. Environments and secrets
 
 | Name | Kind | Used by | Notes |
