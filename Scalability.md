@@ -1,61 +1,108 @@
 # Scalability
 
 Capacity view for ScaleOfCoherence: what the current single-backend deployment
-handles, which resource binds first as load grows, and what changes by growth
-stage.
+handles, where it breaks first, and what changes by growth stage.
 
-**Basis.** These are order-of-magnitude planning anchors derived from the
-schema and endpoints in [DEPENDENCY_MAP.md](DEPENDENCY_MAP.md) and typical
-PostgreSQL/Go behaviour. They are **not measurements**. Confirm with the
-validation tests in §6 before committing to any capacity number.
+**Basis.** The numbers below are measured, not assumed: a seeded Target-A
+dataset (section 2) driven through the real server with the real PostgreSQL
+schema, using `bench/` (section 8, reproducible on any machine). They describe
+one host — AMD Ryzen 7 7840HS (16 threads, NVMe), PostgreSQL 17.11 with
+default container settings, server and database sharing the host, loopback
+HTTP, warm cache — so read them as "what this class of hardware does", and
+scale reads with database CPU and writes with NVMe commit rate.
 
----
-
-## 1. Deployment assumed
+## 1. Deployment and targets
 
 | Component | Current plan |
 |---|---|
 | Backend | One Go container (Azure Container Apps): API + SPA, 1–2 vCPU, 1–2 GB |
 | Database | One PostgreSQL 17 instance, SSD |
 | Frontend | Static files served by the same container |
-| Auth | Stateless JWT (HS256); bcrypt on login |
+| Auth | Stateless JWT (HS256); bcrypt (cost 10) on login |
 | Async work | None (no outbox or notification tables) |
 
-Two targets the design is judged against: **Target A** — the challenge brief,
-~5k registered users with ~2k concurrent. **Target B** — ~2M registered users
-with ~20k concurrent.
+- **Target A** (challenge brief): ~5k registered users, ~2k concurrent,
+  tens of thousands of items.
+- **Target B** (~2M registered users, ~20k concurrent).
 
-## 2. Which resource binds first
+## 2. Measured footprint (Target A dataset)
 
-The database, not the Go server.
+Seeded: 1 org, 100 users, 100k items (half closed), 1.5M logged changes
+(15 per item), 400k activity rows (4 per item), 200k comments (2 per item).
 
-| Resource | Behaviour |
+| Table | Rows | Total (heap + indexes) | Bytes/row |
+|---|---|---|---|
+| `items` | 100k | 252 MB | 2,646 |
+| `item_changes` | 1.5M | 1,027 MB | 718 |
+| `item_stage_activity` | 400k | 128 MB | 335 |
+| `item_comments` | 200k | 64 MB | 333 |
+| **Database total** | | **1.47 GB** | |
+
+- `items` is 1.5 KB/row of indexes alone; the trigram indexes dominate.
+- An item costs a predictable **~15 KB for its whole lifetime** (row + 15
+  versions + activity + comments): 1M items ≈ 15 GB, Target B's 20–40M items
+  ≈ 0.3–0.6 TB, and `item_changes` is ~70% of it.
+- Target A fits in RAM on a 16 GB database. Target B does not; partition and
+  archive history (section 6).
+
+## 3. Measured latency and throughput
+
+Sequential latency, warm cache (n = 500–1000):
+
+| Request | p50 | p95 |
+|---|---|---|
+| `GET /items?limit=25` (list page + total count) | 26.9 ms | 30.6 ms |
+| `GET /items?q=` (trigram over 100k items) | 51.9 ms | 54.8 ms |
+| `GET /items/{id}` | 0.20 ms | 0.28 ms |
+| `GET /items/{id}/timeline` (15 versions) | 0.30 ms | 0.41 ms |
+| `POST /items` (create transaction) | 2.96 ms | 3.31 ms |
+| `POST /items/{id}/activity/claim` (lock + version bump + change row) | 3.49 ms | 4.21 ms |
+
+Concurrent throughput on the same host (app and database share 16 threads):
+
+| Workload | Result |
 |---|---|
-| Server CPU | Handles more req/s than a single Postgres in this class can serve |
-| Database | List, search and count queries dominate DB CPU |
-| Writes | One primary is comfortable for this write share; per-item row locks mean contention only between users acting on the *same* item, and a losing optimistic-lock attempt (409) writes nothing |
-| Login | bcrypt is the only significant per-request CPU cost; already rate-limited and concurrency-capped, but size CPU for login peaks |
-| Connections | Tens busy at Target A peak; pool capped at 20 per replica |
-| Storage | History is append-only; the history tables are the first data to outgrow one node |
+| list, 16 concurrent | 175 req/s |
+| search, 8 concurrent | 151 req/s |
+| create, 8 concurrent | 1,753 req/s (NVMe group commit) |
+| bcrypt compare, single thread | 51.9 ms, 19/s per core |
+| bcrypt compare, 8 threads | 178/s |
 
-**Result.** The current plan comfortably meets Target A. Registered-user count
-barely matters on its own; concurrency and query mix set the limit. Realistic
-ceiling before architectural change: roughly **3k simultaneous users**.
+Login throughput is bounded by the rate limits (10/min per email, 20/min per
+IP), not by bcrypt; the bcrypt cost above is what a login burst costs in CPU.
 
-## 3. Current weak points (cheap fixes first)
+## 4. What this says
+
+- **The database is the first limit, at any load.** List/search cost tens of
+  milliseconds (count and trigram work); primary-key reads cost microseconds.
+  The Go server itself is not the constraint — it served all of the above
+  while also hosting PostgreSQL.
+- **Capacity depends on the endpoint mix, so size from per-vCPU anchors:**
+  ~35 list req/s, ~19 search req/s, thousands of detail/timeline req/s, and
+  ~300 serial write tx/s (1,700+/s with group commit) per database CPU.
+  The brief's 600 req/s peak fits a 4 vCPU database only if list and search
+  are a minority of the traffic — which is what makes the count and
+  pagination fixes in section 5 the priority, not more replicas.
+- **Writes are not a bottleneck at this scale:** create and claim commit in
+  ~3 ms, and contention only exists between users acting on the same item.
+- **Login bursts are a CPU cost, not a throughput wall:** 2,000 logins in 2
+  minutes (~17/s) consumes about one core.
+- **Storage is linear:** ~15 KB per item lifetime (section 2).
+
+## 5. Current weak points (cheap fixes first)
 
 | Issue | Impact | Fix |
 |---|---|---|
 | Single backend replica | Deploy or crash is downtime | Run ≥ 2 replicas (JWT is stateless) |
+| Count per list request | Measured 27 ms p50 for a 25-row page; grows with table size | Cap counts ("1000+") or estimate |
 | Page/limit pagination | Deep pages scan and discard rows | Keyset pagination on `(sort_key, id)` |
-| Count per list request | Cost grows with table size | Cap counts ("1000+") or estimate |
+| Trigram `ILIKE` search | Measured 52 ms p50 at 100k items in one org | Per-org result limits, then a dedicated search engine |
 | Dashboard fan-out | N+1 requests per dashboard load | One aggregated dashboard endpoint |
 | Role/team lookup per request | About half of all DB queries (the re-read is deliberate, see ENGINEERING_DECISIONS.md) | Short-TTL in-process cache, invalidated on role changes |
-| Trigram `ILIKE` search | Fine at 10⁵ items per org, degrades beyond | Per-org result limits, then a dedicated search engine |
+| History growth | `item_changes` is append-only and unbounded (70% of storage) | Partition, and archive closed items older than N months |
 | No async processing | No notifications or secondary work | Outbox table + worker (`FOR UPDATE SKIP LOCKED`) |
-| History growth | `item_changes` is append-only and unbounded | Partition, and archive closed items older than N months |
 
-## 4. Changes by growth stage
+## 6. Changes by growth stage
 
 | Area | Phase 1: ~10k simultaneous, ~200k registered | Phase 2: ~2M registered, 20–40k simultaneous |
 |---|---|---|
@@ -79,29 +126,18 @@ from activity and comments to `item_changes` need to be reviewed.
 natural shard key and tenant data never crosses orgs. Tables with a unique
 constraint on `id` alone would need `org_id` added (for example for Citus).
 
-## 5. What stays unchanged
+## 7. What stays unchanged
 
 | Design choice | Why it holds at 2M users |
 |---|---|
-| Optimistic locking on `items.version`, one `item_changes` row per version | Conflicts only occur on the same item; a 409 is cheap and writes nothing |
+| Optimistic locking on `items.version`, one `item_changes` row per version | Conflicts only occur on the same item; a 409 costs ~1 ms and writes nothing |
 | Partial unique index (one open activity per item) and version triggers | Per-item constraints, no global locks |
 | Composite `org_id` foreign keys | Tenant isolation and the basis for sharding |
 | Stateless JWT | Replicas scale with no session affinity |
 | Partial indexes for "my work" and pending approvals | Query cost depends on one user's open work, not total data size |
 
-## 6. Validation plan
+## 8. Reproduce
 
-Run these before trusting any number above, against a database loaded to
-Target A volume (100k items).
-
-| Test | Scenario | Pass criteria |
-|---|---|---|
-| Mixed browse | 90% reads (list, filter, search, detail, timeline), 10% writes, ramp to peak | p95 reads < 200 ms, p95 writes < 300 ms, errors < 0.1% excluding intended 409s, DB CPU < 70% |
-| Contended claim | 100 parallel claims on one item, many items | Exactly 1 success per item, one open activity row, contiguous versions |
-| Login burst | Many logins while the browse test runs | Browse p95 stays in target |
-| Bulk import | 50k items via API, 8 workers | Finishes without connection errors |
-| Soak | 1 hour at average load | No growth in memory, connections or replication lag |
-
-Measure with `pg_stat_statements` (slowest and most frequent queries), pool
-wait time, and per-endpoint p50/p95/p99. Replace the planning anchors above
-with measured values as they become available.
+`bench/` contains the seeding script and load generator used for every number
+above, with exact commands in `bench/README.md`. Re-measure before relying on
+these numbers on different hardware or with a different endpoint mix.
