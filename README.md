@@ -3,7 +3,7 @@
 ---
 
 This Project is made for a challenge round. \
-Find Architecture Decisions [here](ENGINEERING_DECISIONS.md). \
+Find Architecture Decisions and Limitations [here](ENGINEERING_DECISIONS.md). \
 Find Dependency Decisions [here](DEPENDENCY_MAP.md). \
 Find Scalability [here](Scalability.md).
 
@@ -170,7 +170,7 @@ Scalability technicalities will be in [Scalability.md](Scalability.md)
 
 There's no async in the application for now, since I could not find a fitting use case for the current features;
 the default go server with postgres can handle a couple of hundred to a thousand users with 
-ease. For bulk uploading or notifications, async would become necessary. However,  that has not been implemented, also the current frontend is static pages,
+ease. For bulk imoprts or notifications, async would become necessary. However,  that has not been implemented, also the current frontend is static pages,
 for which I had planned to implement SSE to call outdated versions for items, but for a first version that would be 
 too broad of a scope, hence that has been skipped.
 
