@@ -137,6 +137,16 @@ body {
   align-items: center;
   justify-content: center;
   background: var(--bg);
+  padding: 24px;
+}
+
+.auth-shell {
+  display: flex;
+  align-items: flex-start;
+  justify-content: center;
+  gap: 20px;
+  width: 100%;
+  max-width: 860px;
 }
 
 .auth-card {
@@ -180,6 +190,123 @@ body {
 }
 
 .auth-toggle button:hover { text-decoration: underline; }
+
+/* ── Demo accounts (login page) ─────────────────────────────────────────────── */
+.demo-card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  box-shadow: var(--shadow-md);
+  padding: 28px;
+  width: 430px;
+}
+
+.demo-card h2 {
+  font-size: 18px;
+  font-weight: 700;
+  color: var(--text);
+  margin-bottom: 4px;
+}
+
+.demo-card .auth-sub {
+  font-size: 12.5px;
+  color: var(--text-muted);
+  margin-bottom: 16px;
+}
+
+.demo-card code {
+  font-size: 11.5px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 1px 5px;
+}
+
+.demo-accounts {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.demo-account {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  text-align: left;
+  background: #fafbff;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 9px 12px;
+  font: inherit;
+  color: var(--text);
+  cursor: pointer;
+  transition: border-color .12s, background .12s;
+}
+
+.demo-account:not(:disabled):hover {
+  border-color: var(--accent);
+  background: #f5f6ff;
+}
+
+.demo-account:disabled {
+  opacity: .55;
+  cursor: wait;
+}
+
+.demo-account-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.demo-role {
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.demo-scope {
+  font-size: 10px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: .05em;
+  color: var(--text-muted);
+  background: var(--bg);
+  border-radius: 99px;
+  padding: 1px 7px;
+}
+
+.demo-email {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 11.5px;
+  color: var(--text-muted);
+}
+
+.demo-note {
+  font-size: 11.5px;
+  color: var(--text-muted);
+  line-height: 1.4;
+}
+
+.demo-hint {
+  margin-top: 14px;
+  font-size: 11.5px;
+  color: var(--text-muted);
+  line-height: 1.5;
+}
+
+@media (max-width: 880px) {
+  .auth-shell {
+    flex-direction: column;
+    align-items: center;
+  }
+
+  .auth-card,
+  .demo-card {
+    width: 360px;
+    max-width: 100%;
+  }
+}
 
 /* ── Page header ───────────────────────────────────────────────────────────── */
 .page-header {

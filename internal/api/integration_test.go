@@ -359,6 +359,9 @@ func TestAuthorizationMatrix(t *testing.T) {
 	stageID := id(t, admin.json("POST", "/workflows/"+wfID+"/stages", map[string]any{
 		"name": "stage", "assigned_team_id": teamID, "position": 1,
 	}, http.StatusCreated), "id")
+	stage2ID := id(t, admin.json("POST", "/workflows/"+wfID+"/stages", map[string]any{
+		"name": "stage-2", "assigned_team_id": teamID, "position": 2,
+	}, http.StatusCreated), "id")
 	itemID := id(t, admin.json("POST", "/items", map[string]any{
 		"title": "authz-item", "workflow_id": wfID, "current_stage_id": stageID,
 	}, http.StatusCreated), "id")
@@ -407,6 +410,89 @@ func TestAuthorizationMatrix(t *testing.T) {
 	if status, out := viewer.do("POST", "/items/"+itemID+"/comments", map[string]any{"body": "viewer note"}); status != http.StatusForbidden {
 		t.Fatalf("viewer comment = %d, want 403: %s", status, out)
 	}
+
+	// Only an org admin, or an editor/leader of the team assigned to the item's
+	// current stage, may update it. Viewers, commentators, and members with no
+	// team role are rejected even for plain content edits.
+	for _, p := range []struct {
+		name   string
+		client apiClient
+		body   map[string]any
+	}{
+		{"viewer edit", viewer, map[string]any{"title": "viewer-edit", "version": 1}},
+		{"viewer stage", viewer, map[string]any{"title": "authz-item", "current_stage_id": stage2ID, "version": 1}},
+		{"viewer close", viewer, map[string]any{"title": "authz-item", "close": true, "version": 1}},
+		{"member edit", member, map[string]any{"title": "member-edit", "version": 1}},
+		{"member stage", member, map[string]any{"title": "authz-item", "current_stage_id": stage2ID, "version": 1}},
+		{"member close", member, map[string]any{"title": "authz-item", "close": true, "version": 1}},
+	} {
+		t.Run(p.name, func(t *testing.T) {
+			status, out := p.client.do("PUT", "/items/"+itemID, p.body)
+			if status != http.StatusForbidden {
+				t.Fatalf("PUT item %s = %d, want 403: %s", p.name, status, out)
+			}
+		})
+	}
+
+	// An editor on a different team is not authorized for this item.
+	otherTeamID := id(t, admin.json("POST", "/teams", map[string]any{"name": "other-team-" + unique()}, http.StatusCreated), "id")
+	otherName := "other-editor-" + unique()
+	otherBody := admin.json("POST", "/auth/users", map[string]any{
+		"username": otherName, "email": otherName + "@example.com",
+		"password": "integration-password-1", "usertype": "user",
+	}, http.StatusCreated)
+	otherID := id(t, otherBody, "id")
+	admin.mustDo("POST", "/teams/"+otherTeamID+"/members", map[string]any{"user_id": otherID, "role": "editor"}, http.StatusCreated)
+
+	otherLogin := apiClient{t: t, base: ts.URL}
+	otherToken := otherLogin.json("POST", "/auth/login", map[string]any{
+		"email": otherName + "@example.com", "password": "integration-password-1",
+	}, http.StatusOK)["token"].(string)
+	otherEditor := apiClient{t: t, base: ts.URL, token: otherToken}
+	if status, out := otherEditor.do("PUT", "/items/"+itemID, map[string]any{"title": "other-edit", "version": 1}); status != http.StatusForbidden {
+		t.Fatalf("other-team editor update = %d, want 403: %s", status, out)
+	}
+
+	// An editor of the current stage's team may update the item, including
+	// stage and closed state; a leader of the same team may do so as well.
+	editorName := "editor-" + unique()
+	editorBody := admin.json("POST", "/auth/users", map[string]any{
+		"username": editorName, "email": editorName + "@example.com",
+		"password": "integration-password-1", "usertype": "user",
+	}, http.StatusCreated)
+	editorID := id(t, editorBody, "id")
+	admin.mustDo("POST", "/teams/"+teamID+"/members", map[string]any{"user_id": editorID, "role": "editor"}, http.StatusCreated)
+
+	editorLogin := apiClient{t: t, base: ts.URL}
+	editorToken := editorLogin.json("POST", "/auth/login", map[string]any{
+		"email": editorName + "@example.com", "password": "integration-password-1",
+	}, http.StatusOK)["token"].(string)
+	editor := apiClient{t: t, base: ts.URL, token: editorToken}
+
+	editor.mustDo("PUT", "/items/"+itemID, map[string]any{
+		"title": "editor-move", "current_stage_id": stage2ID, "version": 1,
+	}, http.StatusOK)
+	editor.mustDo("PUT", "/items/"+itemID, map[string]any{
+		"title": "editor-move", "close": true, "version": 2,
+	}, http.StatusOK)
+
+	leaderName := "leader-" + unique()
+	leaderBody := admin.json("POST", "/auth/users", map[string]any{
+		"username": leaderName, "email": leaderName + "@example.com",
+		"password": "integration-password-1", "usertype": "user",
+	}, http.StatusCreated)
+	leaderID := id(t, leaderBody, "id")
+	admin.mustDo("POST", "/teams/"+teamID+"/members", map[string]any{"user_id": leaderID, "role": "leader"}, http.StatusCreated)
+
+	leaderLogin := apiClient{t: t, base: ts.URL}
+	leaderToken := leaderLogin.json("POST", "/auth/login", map[string]any{
+		"email": leaderName + "@example.com", "password": "integration-password-1",
+	}, http.StatusOK)["token"].(string)
+	leader := apiClient{t: t, base: ts.URL, token: leaderToken}
+
+	leader.mustDo("PUT", "/items/"+itemID, map[string]any{
+		"title": "leader-reopen", "close": false, "version": 3,
+	}, http.StatusOK)
 }
 
 // ── Idempotency end to end ────────────────────────────────────────────────────

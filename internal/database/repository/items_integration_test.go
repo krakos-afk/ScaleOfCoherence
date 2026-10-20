@@ -560,7 +560,7 @@ func TestStaleVersionAllMutations(t *testing.T) {
 
 		_, err := repo.Update(ctx, w.orgID, item.ID, w.adminID, dto.ItemRequest{
 			Title: "changed", Priority: "high", CurrentStageID: &w.stageOne, Version: 999,
-		})
+		}, true)
 		if !errors.Is(err, ErrStale) {
 			t.Fatalf("expected ErrStale, got %v", err)
 		}

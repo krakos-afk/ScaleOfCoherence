@@ -220,7 +220,7 @@ func (r *ItemRepo) Get(ctx context.Context, orgID, id string) (dto.Item, error) 
 		`SELECT `+itemCols+` FROM items WHERE org_id = $1 AND id = $2`, orgID, id))
 }
 
-func (r *ItemRepo) Update(ctx context.Context, orgID, id, actorID string, req dto.ItemRequest) (dto.Item, error) {
+func (r *ItemRepo) Update(ctx context.Context, orgID, id, actorID string, req dto.ItemRequest, callerIsAdmin bool) (dto.Item, error) {
 	tx, err := r.db.BeginTx(ctx, nil)
 	if err != nil {
 		return dto.Item{}, err
@@ -237,10 +237,27 @@ func (r *ItemRepo) Update(ctx context.Context, orgID, id, actorID string, req dt
 		return dto.Item{}, StaleError{CurrentVersion: cur.Version}
 	}
 
+	// Only an org admin, or an editor/leader of the team assigned to the
+	// item's current stage, may update it.
+	if !callerIsAdmin {
+		ok, err := r.isStageTeamEditorOrLeader(ctx, tx, orgID, cur.CurrentStageID, actorID)
+		if err != nil {
+			return dto.Item{}, err
+		}
+		if !ok {
+			return dto.Item{}, ErrForbidden
+		}
+	}
+
 	// ── 2. Resolve new stage / workflow ─────────────────────────────────────
-	newStageID, newWorkflowID, err := r.stageWorkflow(ctx, tx, orgID, req.CurrentStageID)
-	if err != nil {
-		return dto.Item{}, err
+	// An omitted stage leaves the item where it is; stage changes must be
+	// explicit so that a partial edit cannot silently detach the item.
+	newStageID, newWorkflowID := cur.CurrentStageID, cur.WorkflowID
+	if req.CurrentStageID != nil {
+		newStageID, newWorkflowID, err = r.stageWorkflow(ctx, tx, orgID, req.CurrentStageID)
+		if err != nil {
+			return dto.Item{}, err
+		}
 	}
 
 	cf := req.CustomFields
@@ -263,6 +280,7 @@ func (r *ItemRepo) Update(ctx context.Context, orgID, id, actorID string, req dt
 	}
 
 	// ── 4. Version-checked update: one bump, exactly one new version ────────
+	stageChanged := !ptrEq(cur.CurrentStageID, newStageID)
 	newVersion := cur.Version + 1
 	item, err := scanItem(tx.QueryRowContext(ctx, `
 		UPDATE items
@@ -287,7 +305,6 @@ func (r *ItemRepo) Update(ctx context.Context, orgID, id, actorID string, req dt
 	}
 
 	// ── 5. Build diff payload (fields as [old, new]) ────────────────────────
-	stageChanged := !ptrEq(cur.CurrentStageID, newStageID)
 	changes := map[string]any{}
 	if cur.Title != req.Title {
 		changes["title"] = []any{cur.Title, req.Title}
@@ -1248,6 +1265,36 @@ func (r *ItemRepo) isApproverOrLeader(ctx context.Context, tx *sql.Tx, orgID, st
 		`SELECT role FROM team_members WHERE org_id = $1 AND team_id = $2 AND user_id = $3`,
 		orgID, teamID, callerID).Scan(&role)
 	return role == "leader"
+}
+
+// isStageTeamEditorOrLeader reports whether callerID is an editor or leader of
+// the team assigned to the given stage. When the item has no stage (and thus
+// no assigned team), any team editor or leader in the org may edit it.
+func (r *ItemRepo) isStageTeamEditorOrLeader(ctx context.Context, tx *sql.Tx, orgID string, stageID *string, callerID string) (bool, error) {
+	if stageID != nil && *stageID != "" {
+		var role string
+		err := tx.QueryRowContext(ctx, `
+			SELECT tm.role
+			FROM workflow_stages ws
+			JOIN team_members tm ON tm.org_id = ws.org_id AND tm.team_id = ws.assigned_team_id
+			WHERE ws.org_id = $1 AND ws.id = $2 AND tm.user_id = $3`,
+			orgID, *stageID, callerID).Scan(&role)
+		if errors.Is(err, sql.ErrNoRows) {
+			return false, nil
+		}
+		if err != nil {
+			return false, err
+		}
+		return role == "editor" || role == "leader", nil
+	}
+
+	var ok bool
+	err := tx.QueryRowContext(ctx, `
+		SELECT EXISTS (
+			SELECT 1 FROM team_members
+			WHERE org_id = $1 AND user_id = $2 AND role IN ('editor', 'leader'))`,
+		orgID, callerID).Scan(&ok)
+	return ok, err
 }
 
 // isStageTeamLeader reports whether callerID is a leader of the team assigned to

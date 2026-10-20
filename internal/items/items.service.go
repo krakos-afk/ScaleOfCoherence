@@ -50,7 +50,7 @@ func (s *Service) Update(ctx context.Context, itemID string, req dto.ItemRequest
 	if err != nil {
 		return dto.Item{}, err
 	}
-	return s.repo.Update(ctx, id.OrgID, itemID, id.UserID, req)
+	return s.repo.Update(ctx, id.OrgID, itemID, id.UserID, req, id.IsAdmin())
 }
 
 func (s *Service) Delete(ctx context.Context, itemID string) error {
@@ -158,9 +158,9 @@ func (s *Service) Attention(ctx context.Context, limit int) (dto.Attention, erro
 	return s.repo.Attention(ctx, id.OrgID, id.UserID, limit)
 }
 
-// writer returns the identity if the caller may create/update items.
-// Any org member (admin or user) may; viewer/editor restrictions are
-// enforced per-team when working on item activity.
+// writer returns the identity if the caller may create items. Any org member
+// (admin or user) may; updates are further restricted by the repository to an
+// org admin or an editor/leader of the team assigned to the item's stage.
 func writer(ctx context.Context) (identity.Identity, error) {
 	id, err := identity.GetIdentity(ctx)
 	if err != nil {
