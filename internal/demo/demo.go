@@ -446,9 +446,14 @@ func Run(ctx context.Context, baseURL string, out io.Writer) (err error) {
 		{demoViewer, "user · viewer"},
 		{demoMember, "user · no team role"},
 	} {
-		fmt.Printf("   %-17s %-28s %s\n", a.name, emailFor(a.name), a.role)
+		fmt.Fprintf(out, "   %-17s %-28s %s\n", a.name, emailFor(a.name), a.role)
 	}
+	return nil
 }
+
+// failure carries a demo error out of the panic-based helpers below so Run can
+// return it instead of exiting the host process.
+type failure struct{ err error }
 
 // detail renders the extra information carried by a timeline entry. Notes are
 // not shown because the timeline references the activity's current state, not
@@ -500,14 +505,6 @@ func tokenFrom(r reply) string {
 	return str(m, "token")
 }
 
-func step(title string) {
-	fmt.Printf("\n== %s ==\n", title)
-}
-
-func note(format string, args ...any) {
-	fmt.Printf("   "+format+"\n", args...)
-}
-
 func str(m map[string]any, key string) string {
 	v, ok := m[key].(string)
 	if !ok || v == "" {
@@ -525,6 +522,5 @@ func num(m map[string]any, key string) int64 {
 }
 
 func die(format string, args ...any) {
-	fmt.Fprintf(os.Stderr, "\nFAILED: "+format+"\n", args...)
-	os.Exit(1)
+	panic(failure{err: fmt.Errorf(format, args...)})
 }
