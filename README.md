@@ -151,8 +151,8 @@ npx eslint src
 npm run build
 ```
 
-The integration tests create and drop a `scaleco_test` database on the
-configured Postgres (override with `TEST_DATABASE_URL`).
+The integration tests create and drop package-specific databases derived from
+`TEST_DATABASE_URL` on the configured Postgres (default `scaleco_test`).
 
 ## My Thoughts
 

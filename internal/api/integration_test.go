@@ -86,6 +86,12 @@ func setupAPIDB(dsn string) (*sql.DB, error) {
 	if dbName == "" {
 		return nil, errors.New("test database name is empty")
 	}
+	// Use a package-specific database so `go test ./...` can run the API and
+	// repository integration suites concurrently without dropping each
+	// other's database.
+	dbName += "_api"
+	u.Path = "/" + dbName
+	dsn = u.String()
 
 	adminURL := *u
 	adminURL.Path = "/postgres"
