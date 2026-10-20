@@ -349,6 +349,29 @@ func TestJourneyApprovalLoop(t *testing.T) {
 	if v := itemVersion(t, w.admin, itemID); v != 7 {
 		t.Fatalf("version after approval = %d, want 7", v)
 	}
+
+	tl := w.admin.json("GET", "/items/"+itemID+"/timeline", nil, http.StatusOK)
+	notes := map[float64]string{}
+	rejectNotes := map[float64]string{}
+	for _, raw := range tl["entries"].([]any) {
+		e := raw.(map[string]any)
+		act, _ := e["activity"].(map[string]any)
+		if act == nil {
+			continue
+		}
+		if note, ok := act["completion_note"].(string); ok {
+			notes[e["version"].(float64)] = note
+		}
+		if note, ok := act["approval_note"].(string); ok {
+			rejectNotes[e["version"].(float64)] = note
+		}
+	}
+	if notes[3] != "ready" || notes[6] != "second try" {
+		t.Fatalf("completion notes drifted: %v", notes)
+	}
+	if rejectNotes[4] != "redo" || rejectNotes[7] != "ok" {
+		t.Fatalf("approval notes drifted: %v", rejectNotes)
+	}
 }
 
 // ── 4. Reassignment ───────────────────────────────────────────────────────────

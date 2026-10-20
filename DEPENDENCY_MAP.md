@@ -107,7 +107,7 @@ flowchart TD
 | `DELETE /items/{id}` | admin | `Delete` | items |
 | `POST /items/{id}/advance` | admin or stage-team leader | `AdvanceStage` | items, item_changes, item_stage_activity |
 | `POST /items/{id}/status` | admin or stage-team leader | `SetClosed` | items, item_changes |
-| `GET /items/{id}/timeline` | any member | `Timeline` | item_changes ⋈ users, item_stage_activity |
+| `GET /items/{id}/timeline` | any member | `Timeline` | item_changes ⋈ users (activity snapshots in `changes`; legacy rows fall back to item_stage_activity) |
 | `GET /items/my` | caller's open activities | `ListMy` | items ⋈ item_stage_activity |
 | `GET /items/attention` | caller's open work + pending approvals | `Attention` | items, item_stage_activity, workflow_stages |
 | `GET /items/{id}/activity/open` | any member | `GetOpenActivity` | item_stage_activity |

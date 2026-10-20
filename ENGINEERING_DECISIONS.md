@@ -5,7 +5,10 @@ The core design choices, in brief:
 1. **Versioned items with one history track.** Every mutation bumps
    `items.version` with a conditional update in the same transaction that
    writes its `item_changes` row, so writes are atomic and history has no gaps.
-   Stage activity is merged into that history; comments are anchored to the same
+   Stage activity is merged into that history; each activity-bearing change
+   stores a snapshot of the activity state (stage, team, assignee, completion
+   and approval notes) in its `item_changes.changes` payload, so timeline
+   entries remain accurate after later rework. Comments are anchored to the same
    `(org_id, item_id, version)` track but returned as their own feed and never
    bump the version. Stale writes are rejected with `409` (see Optimistic
    concurrency).
@@ -116,7 +119,7 @@ Postgres service, plus `govulncheck` and `npm audit`.
 
 | File | Tests | Covers |
 |---|---|---|
-| `repository/items_integration_test.go` | `TestConcurrentClaimSameVersion`, `TestReassignSingleVersion`, `TestStaleActivityVersionRejected`, `TestItemVersionMustBeLogged`, `TestCompleteApproveContiguousVersions`, `TestTimelineOrderingAndPagination`, `TestCrossOrgIsolation`, `TestStaleVersionAllMutations` | version-track invariants and triggers, optimistic locking under concurrency, stale-version 409s, timeline ordering, org isolation |
+| `repository/items_integration_test.go` | `TestConcurrentClaimSameVersion`, `TestReassignSingleVersion`, `TestStaleActivityVersionRejected`, `TestItemVersionMustBeLogged`, `TestCompleteApproveContiguousVersions`, `TestTimelineActivitySnapshots`, `TestTimelineAssignmentSnapshotAfterRejection`, `TestTimelineOrderingAndPagination`, `TestCrossOrgIsolation`, `TestStaleVersionAllMutations` | version-track invariants and triggers, optimistic locking under concurrency, stale-version 409s, immutable timeline activity snapshots, timeline ordering, org isolation |
 | `repository/comments_integration_test.go` | `TestCommentCreatePermissionsAndVersion`, `TestCommentVersionAnchoring`, `TestCommentDeletePermissions` | comment permissions, anchoring to the version they were written against |
 | `repository/lists_integration_test.go` | `TestTeamListSearchAndSort`, `TestWorkflowListSearchAndSort`, `TestTeamMembersSearchAndSort`, `TestOrgUserListSearchAndSort` | search filters, sort whitelists, pagination on list endpoints |
 | `repository/attention_integration_test.go` | `TestAttentionAssignedAndApprovals` | "my open work" and pending-approval queries |
@@ -124,6 +127,7 @@ Postgres service, plus `govulncheck` and `npm audit`.
 | `repository/idempotency_integration_test.go` | `TestIdempotencyClaimLifecycle`, `TestIdempotencyClaimConcurrency` (8 workers, exactly one fresh claim), `TestIdempotencyKeysAreScopedPerOrgAndUser`, `TestIdempotencyDeleteExpired` | DB claim lifecycle, concurrency, tenant/user scoping, retention cleanup query |
 | `database/postgres_integration_test.go` | `TestConnectAppliesPoolLimitsAndTimeouts` | pool limits and per-connection timeouts |
 | `api/integration_test.go` (full router + DB) | `TestOrgIsolationAcrossEndpoints` (21 probes incl. search leakage), `TestAuthorizationMatrix` (admin/member/viewer), `TestIdempotencyEndToEnd` (replay header, single row, 422) | HTTP-level tenant isolation, role matrix enforcement, idempotency across the real stack |
+| `api/demo_integration_test.go` (full router + DB) | `TestDemoStartupSeedIsIdempotent` | startup demo seeding does not create duplicate items on restart |
 | `api/journeys_integration_test.go` (full router + DB) | `TestJourneyOrgSetup`, `TestJourneyItemLifecycle`, `TestJourneyApprovalLoop`, `TestJourneyReassign`, `TestJourneyOptimisticConcurrency`, `TestJourneyCloseReopen`, `TestJourneyComments` | end-to-end user workflows: org setup and directory reads, create → claim → complete → advance with dashboard reads and timeline, approval pending/reject/re-approve, reassignment, 409 resync cycle, close/reopen, comment deletion rules |
 
 ## What is covered

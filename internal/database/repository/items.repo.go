@@ -112,12 +112,19 @@ func (r *ItemRepo) Create(ctx context.Context, orgID, actorID string, req dto.It
 
 	// If the item starts on a stage, open an unclaimed activity row.
 	if newStageID != nil {
-		actID, err := r.openActivity(ctx, tx, orgID, item.ID, *newStageID, actorID, item.Version)
+		actID, teamID, err := r.openActivity(ctx, tx, orgID, item.ID, *newStageID, actorID, item.Version)
 		if err != nil {
 			return dto.Item{}, err
 		}
-		if err := mergeChangeKeys(ctx, tx, orgID, item.ID, item.Version,
-			map[string]any{"activity_id": actID}); err != nil {
+		if err := mergeChangeKeys(ctx, tx, orgID, item.ID, item.Version, map[string]any{
+			"activity_id": actID,
+			"activity": activitySnapshot{
+				Type:       "created",
+				StageID:    *newStageID,
+				TeamID:     teamID,
+				AssignedBy: &actorID,
+			},
+		}); err != nil {
 			return dto.Item{}, err
 		}
 	}
@@ -346,11 +353,17 @@ func (r *ItemRepo) Update(ctx context.Context, orgID, id, actorID string, req dt
 			extra["closed_activity_id"] = cid
 		}
 		if newStageID != nil {
-			nid, err := r.openActivity(ctx, tx, orgID, id, *newStageID, actorID, newVersion)
+			nid, teamID, err := r.openActivity(ctx, tx, orgID, id, *newStageID, actorID, newVersion)
 			if err != nil {
 				return dto.Item{}, err
 			}
 			extra["activity_id"] = nid
+			extra["activity"] = activitySnapshot{
+				Type:       "stage_moved",
+				StageID:    *newStageID,
+				TeamID:     teamID,
+				AssignedBy: &actorID,
+			}
 		}
 		if len(extra) > 0 {
 			if err := mergeChangeKeys(ctx, tx, orgID, id, newVersion, extra); err != nil {
@@ -516,11 +529,17 @@ func (r *ItemRepo) AdvanceStage(ctx context.Context, orgID, itemID, callerID str
 	} else if cid != 0 {
 		extra["closed_activity_id"] = cid
 	}
-	nid, err := r.openActivity(ctx, tx, orgID, itemID, nextStageID, callerID, newVersion)
+	nid, teamID, err := r.openActivity(ctx, tx, orgID, itemID, nextStageID, callerID, newVersion)
 	if err != nil {
 		return dto.Item{}, err
 	}
 	extra["activity_id"] = nid
+	extra["activity"] = activitySnapshot{
+		Type:       "stage_moved",
+		StageID:    nextStageID,
+		TeamID:     teamID,
+		AssignedBy: &callerID,
+	}
 	if err := mergeChangeKeys(ctx, tx, orgID, itemID, newVersion, extra); err != nil {
 		return dto.Item{}, err
 	}
@@ -543,7 +562,8 @@ func (r *ItemRepo) Timeline(ctx context.Context, orgID, itemID string, beforeVer
 		       c.changes,
 		       a.id, a.stage_id, a.team_id, COALESCE(t.name, ''),
 		       a.assigned_user_id, COALESCE(u.username, ''),
-		       a.completion_note, a.approval_status, a.approval_note
+		       a.completion_note, a.approval_status, a.approval_note,
+		       COALESCE(su.username, ''), COALESCE(st.name, '')
 		FROM item_changes c
 		JOIN users au ON au.id = c.actor_id
 		LEFT JOIN item_stage_activity a
@@ -551,6 +571,11 @@ func (r *ItemRepo) Timeline(ctx context.Context, orgID, itemID string, beforeVer
 		      AND a.org_id = c.org_id
 		LEFT JOIN users u ON u.id = a.assigned_user_id
 		LEFT JOIN teams t ON t.org_id = a.org_id AND t.id = a.team_id
+		LEFT JOIN users su
+		       ON su.id = NULLIF(c.changes #>> '{activity,assigned_user_id}', '')::uuid
+		LEFT JOIN teams st
+		       ON st.org_id = c.org_id
+		      AND st.id = NULLIF(c.changes #>> '{activity,team_id}', '')::uuid
 		WHERE c.org_id = $1 AND c.item_id = $2
 		  AND ($3::bigint IS NULL OR c.version < $3)
 		ORDER BY c.version DESC
@@ -563,18 +588,20 @@ func (r *ItemRepo) Timeline(ctx context.Context, orgID, itemID string, beforeVer
 
 	for rows.Next() {
 		var (
-			e              dto.TimelineEntry
-			actorName      string
-			changes        []byte
-			actID          sql.NullInt64
-			stageID        sql.NullString
-			teamID         sql.NullString
-			teamName       sql.NullString
-			assignedUserID sql.NullString
-			assignedName   sql.NullString
-			completionNote sql.NullString
-			approvalStatus sql.NullString
-			approvalNote   sql.NullString
+			e                dto.TimelineEntry
+			actorName        string
+			changes          []byte
+			actID            sql.NullInt64
+			stageID          sql.NullString
+			teamID           sql.NullString
+			teamName         sql.NullString
+			assignedUserID   sql.NullString
+			assignedName     sql.NullString
+			completionNote   sql.NullString
+			approvalStatus   sql.NullString
+			approvalNote     sql.NullString
+			snapshotUserName sql.NullString
+			snapshotTeamName sql.NullString
 		)
 		if err := rows.Scan(
 			&e.Version, &e.CreatedAt, &e.Actor.ID, &actorName,
@@ -582,13 +609,15 @@ func (r *ItemRepo) Timeline(ctx context.Context, orgID, itemID string, beforeVer
 			&actID, &stageID, &teamID, &teamName,
 			&assignedUserID, &assignedName,
 			&completionNote, &approvalStatus, &approvalNote,
+			&snapshotUserName, &snapshotTeamName,
 		); err != nil {
 			return page, err
 		}
 		e.Actor.Username = actorName
 		e.Changes = json.RawMessage(changes)
 		var meta struct {
-			Type string `json:"type"`
+			Type     string            `json:"type"`
+			Activity *activitySnapshot `json:"activity"`
 		}
 		_ = json.Unmarshal(changes, &meta)
 		e.Type = meta.Type
@@ -616,6 +645,28 @@ func (r *ItemRepo) Timeline(ctx context.Context, orgID, itemID string, beforeVer
 			if approvalNote.Valid {
 				n := approvalNote.String
 				act.ApprovalNote = &n
+			}
+			if snap := meta.Activity; snap != nil {
+				// The activity row is mutable; prefer the snapshot written at
+				// event time so history cannot be rewritten by later actions.
+				act.Type = snap.Type
+				if snap.StageID != "" {
+					act.StageID = snap.StageID
+				}
+				if snap.TeamID != "" {
+					act.TeamID = snap.TeamID
+					act.TeamName = snapshotTeamName.String
+				}
+				act.AssignedUserID = nil
+				act.AssignedUser = nil
+				if snap.AssignedUserID != nil && *snap.AssignedUserID != "" {
+					id := *snap.AssignedUserID
+					act.AssignedUserID = &id
+					act.AssignedUser = &dto.TimelineUserRef{ID: id, Username: snapshotUserName.String}
+				}
+				act.CompletionNote = snap.CompletionNote
+				act.ApprovalStatus = snap.ApprovalStatus
+				act.ApprovalNote = snap.ApprovalNote
 			}
 			e.Activity = act
 		}
@@ -784,14 +835,14 @@ func (r *ItemRepo) ClaimActivity(ctx context.Context, orgID, itemID, callerID st
 
 	// Load & lock the open activity.
 	var actID int64
-	var teamID string
+	var stageID, teamID string
 	err = tx.QueryRowContext(ctx, `
-		SELECT id, team_id
+		SELECT id, stage_id, team_id
 		FROM item_stage_activity
 		WHERE org_id = $1 AND item_id = $2
 		  AND released_at IS NULL AND completed_at IS NULL
 		FOR UPDATE`,
-		orgID, itemID).Scan(&actID, &teamID)
+		orgID, itemID).Scan(&actID, &stageID, &teamID)
 	if errors.Is(err, sql.ErrNoRows) {
 		return dto.ItemStageActivity{}, ErrNotFound
 	}
@@ -826,6 +877,13 @@ func (r *ItemRepo) ClaimActivity(ctx context.Context, orgID, itemID, callerID st
 		"activity_id": actID,
 		"from":        nil,
 		"to":          callerID,
+		"activity": activitySnapshot{
+			Type:           "assigned",
+			StageID:        stageID,
+			TeamID:         teamID,
+			AssignedUserID: &callerID,
+			AssignedBy:     &callerID,
+		},
 	}); err != nil {
 		return dto.ItemStageActivity{}, err
 	}
@@ -861,15 +919,15 @@ func (r *ItemRepo) CompleteActivity(ctx context.Context, orgID, itemID, callerID
 
 	// Load & lock the open activity.
 	var actID int64
-	var stageID string
+	var stageID, teamID string
 	var assignedUser *string
 	err = tx.QueryRowContext(ctx, `
-		SELECT id, stage_id, assigned_user_id
+		SELECT id, stage_id, team_id, assigned_user_id
 		FROM item_stage_activity
 		WHERE org_id = $1 AND item_id = $2
 		  AND released_at IS NULL AND completed_at IS NULL
 		FOR UPDATE`,
-		orgID, itemID).Scan(&actID, &stageID, &assignedUser)
+		orgID, itemID).Scan(&actID, &stageID, &teamID, &assignedUser)
 	if errors.Is(err, sql.ErrNoRows) {
 		return dto.ItemStageActivity{}, ErrNotFound
 	}
@@ -894,9 +952,22 @@ func (r *ItemRepo) CompleteActivity(ctx context.Context, orgID, itemID, callerID
 	if err != nil {
 		return dto.ItemStageActivity{}, err
 	}
+	snapshot := activitySnapshot{
+		Type:           "completed",
+		StageID:        stageID,
+		TeamID:         teamID,
+		AssignedUserID: &callerID,
+		CompletedBy:    &callerID,
+		CompletionNote: &note,
+	}
+	if approvalRequired {
+		status := "pending"
+		snapshot.ApprovalStatus = &status
+	}
 	if err := insertChange(ctx, tx, orgID, itemID, newVersion, callerID, map[string]any{
 		"type":        "completed",
 		"activity_id": actID,
+		"activity":    snapshot,
 	}); err != nil {
 		return dto.ItemStageActivity{}, err
 	}
@@ -946,14 +1017,16 @@ func (r *ItemRepo) ApproveActivity(ctx context.Context, orgID, itemID, callerID 
 	// Load & lock the pending activity.
 	var actID int64
 	var stageID, teamID string
+	var assignedUserID, completedBy *string
+	var completionNote *string
 	err = tx.QueryRowContext(ctx, `
-		SELECT id, stage_id, team_id
+		SELECT id, stage_id, team_id, assigned_user_id, completed_by, completion_note
 		FROM item_stage_activity
 		WHERE org_id = $1 AND item_id = $2
 		  AND approval_status = 'pending'
 		  AND released_at IS NULL
 		FOR UPDATE`,
-		orgID, itemID).Scan(&actID, &stageID, &teamID)
+		orgID, itemID).Scan(&actID, &stageID, &teamID, &assignedUserID, &completedBy, &completionNote)
 	if errors.Is(err, sql.ErrNoRows) {
 		return dto.ItemStageActivity{}, ErrNotFound
 	}
@@ -974,9 +1047,21 @@ func (r *ItemRepo) ApproveActivity(ctx context.Context, orgID, itemID, callerID 
 	if approved {
 		changeType = "approved"
 	}
+	status := changeType
 	if err := insertChange(ctx, tx, orgID, itemID, newVersion, callerID, map[string]any{
 		"type":        changeType,
 		"activity_id": actID,
+		"activity": activitySnapshot{
+			Type:           changeType,
+			StageID:        stageID,
+			TeamID:         teamID,
+			AssignedUserID: assignedUserID,
+			CompletedBy:    completedBy,
+			CompletionNote: completionNote,
+			ApprovalStatus: &status,
+			ApprovedBy:     &callerID,
+			ApprovalNote:   &note,
+		},
 	}); err != nil {
 		return dto.ItemStageActivity{}, err
 	}
@@ -1093,6 +1178,13 @@ func (r *ItemRepo) ReassignActivity(ctx context.Context, orgID, itemID, callerID
 		"type": "assigned",
 		"from": curAssignee,
 		"to":   targetUserID,
+		"activity": activitySnapshot{
+			Type:           "assigned",
+			StageID:        stageID,
+			TeamID:         teamID,
+			AssignedUserID: &targetUserID,
+			AssignedBy:     &callerID,
+		},
 	}); err != nil {
 		return dto.ItemStageActivity{}, err
 	}
@@ -1135,6 +1227,21 @@ func (r *ItemRepo) ReassignActivity(ctx context.Context, orgID, itemID, callerID
 }
 
 // ── internal helpers ──────────────────────────────────────────────────────────
+
+// activitySnapshot is the immutable activity state recorded in item_changes.
+// Timeline events read this instead of joining the mutable activity row.
+type activitySnapshot struct {
+	Type           string  `json:"type"`
+	StageID        string  `json:"stage_id"`
+	TeamID         string  `json:"team_id"`
+	AssignedUserID *string `json:"assigned_user_id"`
+	AssignedBy     *string `json:"assigned_by"`
+	CompletedBy    *string `json:"completed_by"`
+	CompletionNote *string `json:"completion_note"`
+	ApprovalStatus *string `json:"approval_status"`
+	ApprovedBy     *string `json:"approved_by"`
+	ApprovalNote   *string `json:"approval_note"`
+}
 
 // bumpVersion performs the version-checked UPDATE that starts every mutation.
 // It returns StaleError with the current version when 0 rows match, or
@@ -1203,17 +1310,18 @@ func mergeChangeKeys(ctx context.Context, tx *sql.Tx, orgID, itemID string, vers
 }
 
 // openActivity inserts an unclaimed (assigned_user_id = NULL) activity row for
-// the given stage. It looks up the assigned_team_id from workflow_stages.
-func (r *ItemRepo) openActivity(ctx context.Context, tx *sql.Tx, orgID, itemID, stageID, actorID string, version int64) (int64, error) {
+// the given stage. It looks up the assigned_team_id from workflow_stages and
+// returns the new activity id plus its team id.
+func (r *ItemRepo) openActivity(ctx context.Context, tx *sql.Tx, orgID, itemID, stageID, actorID string, version int64) (int64, string, error) {
 	var teamID string
 	err := tx.QueryRowContext(ctx,
 		`SELECT assigned_team_id::text FROM workflow_stages WHERE org_id = $1 AND id = $2`,
 		orgID, stageID).Scan(&teamID)
 	if errors.Is(err, sql.ErrNoRows) {
-		return 0, ErrNotFound
+		return 0, "", ErrNotFound
 	}
 	if err != nil {
-		return 0, err
+		return 0, "", err
 	}
 
 	var actID int64
@@ -1224,12 +1332,12 @@ func (r *ItemRepo) openActivity(ctx context.Context, tx *sql.Tx, orgID, itemID, 
 		RETURNING id`,
 		orgID, itemID, stageID, teamID, actorID, version).Scan(&actID)
 	if isUniqueViolation(err) {
-		return 0, ConflictError{Message: "activity version conflict"}
+		return 0, "", ConflictError{Message: "activity version conflict"}
 	}
 	if isSerializationFailure(err) {
-		return 0, ConflictError{CurrentVersion: version, Message: "stale item_version"}
+		return 0, "", ConflictError{CurrentVersion: version, Message: "stale item_version"}
 	}
-	return actID, err
+	return actID, teamID, err
 }
 
 // closeOpenActivity releases the item's open activity with the given reason and

@@ -1,5 +1,6 @@
 import { useEffect, useState, useCallback } from 'react'
 import { request, userId, canManageTeam, isAdmin, ApiError } from '../api/client'
+import { TimelineDetails, type TimelineEntry } from './TimelineDetails'
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -21,29 +22,6 @@ type Activity = {
   approved_by: string | null
   approved_at: string | null
   approval_note: string | null
-}
-
-type TimelineUserRef = { id: string; username: string }
-
-type TimelineActivityState = {
-  id: number
-  stage_id: string
-  team_id: string
-  team_name: string
-  assigned_user_id: string | null
-  assigned_user?: TimelineUserRef
-  completion_note: string | null
-  approval_status: string | null
-  approval_note: string | null
-}
-
-type TimelineEntry = {
-  version: number
-  created_at: string
-  actor: TimelineUserRef
-  type: string
-  changes: Record<string, unknown>
-  activity?: TimelineActivityState
 }
 
 type TimelinePage = { entries: TimelineEntry[]; next_before_version: number | null }
@@ -100,10 +78,6 @@ function priorityClass(p: string) {
 function fmt(ts: string | null | undefined) {
   if (!ts) return '—'
   return new Date(ts).toLocaleString()
-}
-
-function titleCase(s: string) {
-  return s.charAt(0).toUpperCase() + s.slice(1)
 }
 
 function activityStatus(a: Activity): { label: string; cls: string } {
@@ -418,117 +392,6 @@ export default function ItemDetail({ itemId, stages, onClose, onItemUpdated }: P
     closed: 'badge-low',
   }
 
-  const HIDDEN_CHANGE_KEYS = new Set(['type', 'activity_id', 'closed_activity_id', 'from', 'to'])
-  const CHANGE_LABELS: Record<string, string> = {
-    title: 'Title', description: 'Description', priority: 'Priority',
-    workflow_id: 'Workflow', custom_fields: 'Custom fields', closed_at: 'Status',
-    stage_id: 'Stage',
-  }
-
-  function renderValue(value: unknown): string {
-    if (value === null || value === undefined || value === '') return '—'
-    if (typeof value === 'boolean') return value ? 'yes' : 'no'
-    if (typeof value === 'object') return JSON.stringify(value)
-    return String(value)
-  }
-
-  function changeValue(k: string, value: unknown): string {
-    switch (k) {
-      case 'priority':
-        return typeof value === 'string' ? titleCase(value) : renderValue(value)
-      case 'workflow_id': {
-        if (typeof value !== 'string' || !value) return '—'
-        const s = stages.find((s) => s.workflowId === value)
-        return s ? s.workflowName : value.slice(0, 8) + '…'
-      }
-      case 'closed_at':
-        return value ? 'Closed' : 'Reopened'
-      case 'stage_id':
-        return stageName(typeof value === 'string' ? value : null, false)
-      default:
-        return renderValue(value)
-    }
-  }
-
-  function TimelineRowContent({ e }: { e: TimelineEntry }) {
-    const c = e.changes || {}
-    const rows: React.ReactNode[] = []
-
-    if (e.type === 'updated' || e.type === 'stage_moved') {
-      for (const [k, v] of Object.entries(c)) {
-        if (HIDDEN_CHANGE_KEYS.has(k)) continue
-        const label = CHANGE_LABELS[k] ?? k
-        if (Array.isArray(v) && v.length === 2) {
-          rows.push(
-            <div key={k} style={{ display: 'flex', gap: 8 }}>
-              <span style={{ color: 'var(--text-muted)', minWidth: 84 }}>{label}</span>
-              <span style={{ wordBreak: 'break-word' }}>
-                {changeValue(k, v[0])} <span style={{ color: 'var(--text-muted)' }}>→</span> {changeValue(k, v[1])}
-              </span>
-            </div>,
-          )
-        } else {
-          rows.push(
-            <div key={k} style={{ display: 'flex', gap: 8 }}>
-              <span style={{ color: 'var(--text-muted)', minWidth: 84 }}>{label}</span>
-              <span>{changeValue(k, v)}</span>
-            </div>,
-          )
-        }
-      }
-    }
-
-    if (e.type === 'stage_moved') {
-      rows.push(
-        <div key="move" style={{ display: 'flex', gap: 8 }}>
-          <span style={{ color: 'var(--text-muted)', minWidth: 84 }}>Stage</span>
-          <span>{stageName((c.from as string) ?? null, false)} <span style={{ color: 'var(--text-muted)' }}>→</span> {stageName((c.to as string) ?? null, false)}</span>
-        </div>,
-      )
-    }
-
-    if (e.type === 'assigned') {
-      rows.push(
-        <div key="assign" style={{ display: 'flex', gap: 8 }}>
-          <span style={{ color: 'var(--text-muted)', minWidth: 84 }}>Assignee</span>
-          <span>{resolveUser(c.from as string | null)} <span style={{ color: 'var(--text-muted)' }}>→</span> {resolveUser(c.to as string)}</span>
-        </div>,
-      )
-    }
-
-    if (e.type === 'completed' && e.activity?.completion_note) {
-      rows.push(
-        <div key="note" style={{ display: 'flex', gap: 8 }}>
-          <span style={{ color: 'var(--text-muted)', minWidth: 84 }}>Note</span>
-          <span>{e.activity.completion_note}</span>
-        </div>,
-      )
-    }
-
-    if ((e.type === 'approved' || e.type === 'rejected') && e.activity?.approval_note) {
-      rows.push(
-        <div key="review" style={{ display: 'flex', gap: 8 }}>
-          <span style={{ color: 'var(--text-muted)', minWidth: 84 }}>Review</span>
-          <span>{e.activity.approval_note}</span>
-        </div>,
-      )
-    }
-
-    if (e.type === 'closed') {
-      rows.push(
-        <div key="closed" style={{ display: 'flex', gap: 8 }}>
-          <span style={{ color: 'var(--text-muted)', minWidth: 84 }}>Status</span>
-          <span>{(c.closed as boolean) ? 'Closed' : 'Reopened'}</span>
-        </div>,
-      )
-    }
-
-    if (rows.length === 0) {
-      return <div style={{ fontSize: 12, color: 'var(--text-muted)' }}>No additional detail.</div>
-    }
-    return <div style={{ display: 'flex', flexDirection: 'column', gap: 2, fontSize: 12 }}>{rows}</div>
-  }
-
   if (loading) {
     return (
       <div className="drawer-backdrop" onClick={(e) => e.target === e.currentTarget && onClose()}>
@@ -840,7 +703,7 @@ export default function ItemDetail({ itemId, stages, onClose, onItemUpdated }: P
                         </div>
                         <span style={{ fontSize: 11, color: 'var(--text-muted)', whiteSpace: 'nowrap' }}>{fmt(e.created_at)}</span>
                       </div>
-                      <TimelineRowContent e={e} />
+                      <TimelineDetails entry={e} stages={stages} resolveUser={resolveUser} stageName={stageName} />
                     </div>
                   ))}
                   {nextBefore != null && (

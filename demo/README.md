@@ -6,16 +6,16 @@ item versioning with a stale-write `409`, claim/complete, reject/approve, stage
 advance, close, comments, and the merged timeline.
 
 The server seeds this workspace through its own API at startup when
-`SEED_DEMO=true` (the default). The standalone command below remains useful for
-walking the flow again against a running server. The demo never touches the
-database.
+`SEED_DEMO=true` (the default). Startup seeding reuses the workspace and its
+demo item, so restarts do not create duplicate items. The standalone command
+below remains useful for walking the flow again against a running server; each
+manual invocation adds one item. The demo never touches the database.
 
     go run ./demo -base http://localhost:8080
 
 The workspace (`Scale Demo`) is created on the first run and reused afterwards,
-so the command is safe to repeat; each run adds one item and walks it through
-the workflow. The login page lists the same accounts and signs in with one
-click.
+so the command is safe to repeat. The login page lists the same accounts and
+signs in with one click.
 
 | Account | Email | Role |
 |---|---|---|

@@ -9,7 +9,8 @@
 //   - the merged item timeline.
 //
 // It never touches the database. The workspace is seeded once and reused on
-// later runs, so it is safe to run at startup or from the demo command.
+// later runs; startup seeding also reuses an existing demo item, so restarts do
+// not add duplicates.
 package demo
 
 import (
@@ -20,6 +21,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"sort"
 	"strings"
 	"time"
@@ -139,9 +141,9 @@ func (c *client) itemVersion(itemID string) int64 {
 
 // Run seeds the demo workspace and walks one item through its workflow over
 // the network. It is safe to call repeatedly; the workspace and accounts are
-// reused.
+// reused and each invocation adds one item.
 func Run(ctx context.Context, baseURL string, out io.Writer) error {
-	return run(ctx, baseURL, httpClient, out)
+	return run(ctx, baseURL, httpClient, out, false)
 }
 
 // handlerTransport dispatches HTTP requests directly to an in-process handler,
@@ -158,11 +160,13 @@ func (t handlerTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 
 // RunHandler runs the same demo through the API handler in-process. It is used
 // by the server at startup, after migrations and before the public listener.
+// Startup seeding skips the walkthrough when the demo workflow already has an
+// item, so restarts do not add duplicate items.
 func RunHandler(ctx context.Context, handler http.Handler, out io.Writer) error {
-	return run(ctx, "http://demo.local", &http.Client{Transport: handlerTransport{handler: handler}}, out)
+	return run(ctx, "http://demo.local", &http.Client{Transport: handlerTransport{handler: handler}}, out, true)
 }
 
-func run(ctx context.Context, baseURL string, hc *http.Client, out io.Writer) (err error) {
+func run(ctx context.Context, baseURL string, hc *http.Client, out io.Writer, skipExistingItems bool) (err error) {
 	defer func() {
 		if p := recover(); p != nil {
 			f, ok := p.(failure)
@@ -312,6 +316,14 @@ func run(ctx context.Context, baseURL string, hc *http.Client, out io.Writer) (e
 	}
 	stage1ID := ensureStage(demoStage1, 1, true)
 	stage2ID := ensureStage(demoStage2, 2, false)
+
+	if skipExistingItems {
+		items := editor.callPage("GET", "/items?workflow_id="+url.QueryEscape(wfID)+"&page=1&limit=1", http.StatusOK, "list demo items")
+		if len(items) > 0 {
+			note("reusing existing demo item; skipping walkthrough")
+			return nil
+		}
+	}
 
 	step("2. Create an item as the editor")
 	item := editor.call("POST", "/items", map[string]any{

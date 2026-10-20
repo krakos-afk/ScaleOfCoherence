@@ -453,6 +453,128 @@ func TestCompleteApproveContiguousVersions(t *testing.T) {
 	}
 }
 
+// 5b. Timeline entries keep the activity state from when they were written,
+// even after the same activity row is rejected, re-claimed, and re-completed.
+func TestTimelineActivitySnapshots(t *testing.T) {
+	resetDB(t)
+	repo := NewItemRepo(testDB)
+	w := seedWorld(t, true)
+	item := w.createItem(t, repo)
+
+	if _, err := repo.ClaimActivity(context.Background(), w.orgID, item.ID, w.adminID, 1, true); err != nil {
+		t.Fatalf("claim: %v", err)
+	}
+	if _, err := repo.CompleteActivity(context.Background(), w.orgID, item.ID, w.adminID, "first pass", 2); err != nil {
+		t.Fatalf("complete first pass: %v", err)
+	}
+	if _, err := repo.ApproveActivity(context.Background(), w.orgID, item.ID, w.adminID, false, "redo", 3, true); err != nil {
+		t.Fatalf("reject: %v", err)
+	}
+	if _, err := repo.ClaimActivity(context.Background(), w.orgID, item.ID, w.adminID, 4, true); err != nil {
+		t.Fatalf("re-claim: %v", err)
+	}
+	if _, err := repo.CompleteActivity(context.Background(), w.orgID, item.ID, w.adminID, "second pass", 5); err != nil {
+		t.Fatalf("complete second pass: %v", err)
+	}
+	if _, err := repo.ApproveActivity(context.Background(), w.orgID, item.ID, w.adminID, true, "ok", 6, true); err != nil {
+		t.Fatalf("approve: %v", err)
+	}
+
+	page, err := repo.Timeline(context.Background(), w.orgID, item.ID, nil, 50)
+	if err != nil {
+		t.Fatalf("timeline: %v", err)
+	}
+	byVersion := map[int64]dto.TimelineEntry{}
+	for _, e := range page.Entries {
+		byVersion[e.Version] = e
+	}
+	entry := func(v int64) dto.TimelineEntry {
+		t.Helper()
+		e, ok := byVersion[v]
+		if !ok {
+			t.Fatalf("timeline missing version %d", v)
+		}
+		if e.Activity == nil {
+			t.Fatalf("timeline version %d missing activity", v)
+		}
+		return e
+	}
+	assertString := func(label string, got *string, want string) {
+		t.Helper()
+		if got == nil || *got != want {
+			t.Fatalf("%s = %v, want %q", label, got, want)
+		}
+	}
+
+	created := entry(1)
+	if created.Activity.Type != "created" || created.Activity.StageID != w.stageOne {
+		t.Fatalf("created snapshot = %+v", created.Activity)
+	}
+	claimed := entry(2)
+	if claimed.Activity.Type != "assigned" || claimed.Activity.AssignedUserID == nil || *claimed.Activity.AssignedUserID != w.adminID {
+		t.Fatalf("claim snapshot = %+v", claimed.Activity)
+	}
+	first := entry(3)
+	assertString("first completion note", first.Activity.CompletionNote, "first pass")
+	assertString("first completion status", first.Activity.ApprovalStatus, "pending")
+	if first.Activity.AssignedUserID == nil || *first.Activity.AssignedUserID != w.adminID {
+		t.Fatalf("first completion assignee = %v", first.Activity.AssignedUserID)
+	}
+	rejected := entry(4)
+	assertString("rejected note", rejected.Activity.ApprovalNote, "redo")
+	assertString("rejected completion note", rejected.Activity.CompletionNote, "first pass")
+	assertString("rejected status", rejected.Activity.ApprovalStatus, "rejected")
+	second := entry(6)
+	assertString("second completion note", second.Activity.CompletionNote, "second pass")
+	approved := entry(7)
+	assertString("approval note", approved.Activity.ApprovalNote, "ok")
+	assertString("approval completion note", approved.Activity.CompletionNote, "second pass")
+	assertString("approval status", approved.Activity.ApprovalStatus, "approved")
+
+	// The earlier completion entry must not drift to the latest row state.
+	assertString("first completion note after approve", entry(3).Activity.CompletionNote, "first pass")
+}
+
+// 5c. Reassignment entries retain their target even after the activity row is
+// rejected and cleared for rework.
+func TestTimelineAssignmentSnapshotAfterRejection(t *testing.T) {
+	resetDB(t)
+	repo := NewItemRepo(testDB)
+	w := seedWorld(t, true)
+	item := w.createItem(t, repo)
+
+	if _, err := repo.ClaimActivity(context.Background(), w.orgID, item.ID, w.adminID, 1, true); err != nil {
+		t.Fatalf("claim: %v", err)
+	}
+	if _, err := repo.ReassignActivity(context.Background(), w.orgID, item.ID, w.adminID, w.otherUser, 2, true); err != nil {
+		t.Fatalf("reassign: %v", err)
+	}
+	if _, err := repo.CompleteActivity(context.Background(), w.orgID, item.ID, w.otherUser, "member work", 3); err != nil {
+		t.Fatalf("complete: %v", err)
+	}
+	if _, err := repo.ApproveActivity(context.Background(), w.orgID, item.ID, w.adminID, false, "redo", 4, true); err != nil {
+		t.Fatalf("reject: %v", err)
+	}
+
+	page, err := repo.Timeline(context.Background(), w.orgID, item.ID, nil, 50)
+	if err != nil {
+		t.Fatalf("timeline: %v", err)
+	}
+	for _, e := range page.Entries {
+		if e.Version != 3 {
+			continue
+		}
+		if e.Activity == nil || e.Activity.AssignedUserID == nil || *e.Activity.AssignedUserID != w.otherUser {
+			t.Fatalf("reassignment snapshot lost target: %+v", e.Activity)
+		}
+		if e.Activity.AssignedUser == nil || e.Activity.AssignedUser.Username == "" {
+			t.Fatalf("reassignment snapshot lost username: %+v", e.Activity)
+		}
+		return
+	}
+	t.Fatal("timeline missing reassignment entry")
+}
+
 // 6. Timeline is newest-first and paginates without duplicates or gaps.
 func TestTimelineOrderingAndPagination(t *testing.T) {
 	resetDB(t)

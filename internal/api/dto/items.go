@@ -106,10 +106,12 @@ type TimelineUserRef struct {
 	Username string `json:"username"`
 }
 
-// TimelineActivity is the current state of the activity row referenced by a
-// timeline entry. The client reads fields according to the entry's type.
+// TimelineActivity is the activity state captured when a timeline entry was
+// written. New entries carry an immutable snapshot in item_changes; legacy
+// entries fall back to the current activity row.
 type TimelineActivity struct {
 	ID             int64            `json:"id"`
+	Type           string           `json:"type,omitempty"`
 	StageID        string           `json:"stage_id"`
 	TeamID         string           `json:"team_id"`
 	TeamName       string           `json:"team_name"`
