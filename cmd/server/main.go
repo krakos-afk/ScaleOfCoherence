@@ -5,6 +5,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"log/slog"
 	"net/http"
 	"os"
@@ -18,6 +19,7 @@ import (
 	"ScaleOfCoherence/internal/config"
 	"ScaleOfCoherence/internal/database"
 	"ScaleOfCoherence/internal/database/repository"
+	"ScaleOfCoherence/internal/demo"
 	"ScaleOfCoherence/internal/items"
 	"ScaleOfCoherence/internal/teams"
 	"ScaleOfCoherence/internal/workflows"
@@ -62,17 +64,32 @@ func main() {
 	commentSvc := comments.NewService(repository.NewCommentRepo(db.DB()))
 	idemRepo := repository.NewIdempotencyRepo(db.DB())
 
+	handler := api.NewRouter(authSvc, teamSvc, itemSvc, workflowSvc, commentSvc, idemRepo, db, cfg.SPADir)
+
+	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGTERM, os.Interrupt)
+	defer stop()
+
+	// Seed the demo through the same API handler before accepting public
+	// traffic. No socket or second server is involved.
+	if cfg.SeedDemo {
+		seedCtx, cancel := context.WithTimeout(ctx, 60*time.Second)
+		seedErr := demo.RunHandler(seedCtx, handler, io.Discard)
+		cancel()
+		if seedErr != nil {
+			slog.Warn("demo workspace seeding failed", "err", seedErr)
+		} else {
+			slog.Info("demo workspace ready")
+		}
+	}
+
 	srv := &http.Server{
 		Addr:              ":" + cfg.Port,
-		Handler:           api.NewRouter(authSvc, teamSvc, itemSvc, workflowSvc, commentSvc, idemRepo, db, cfg.SPADir),
+		Handler:           handler,
 		ReadHeaderTimeout: 5 * time.Second,
 		ReadTimeout:       15 * time.Second,
 		WriteTimeout:      30 * time.Second,
 		IdleTimeout:       60 * time.Second,
 	}
-
-	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGTERM, os.Interrupt)
-	defer stop()
 
 	go pruneIdempotencyKeys(ctx, idemRepo)
 

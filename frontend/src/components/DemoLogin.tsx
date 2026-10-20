@@ -42,7 +42,7 @@ const accounts = [
   },
 ]
 
-const notSeeded = 'Demo accounts are not seeded on this server yet. Run `go run ./demo` once, then try again.'
+const notSeeded = 'Demo accounts are not seeded on this server yet. Restart the server (or run `go run ./demo` once), then try again.'
 
 export default function DemoLogin({ onDone }: { onDone: () => void }) {
   const [pending, setPending] = useState('')

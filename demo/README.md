@@ -5,8 +5,9 @@ signup and login, admin-only endpoints, team roles, team-owned workflow stages,
 item versioning with a stale-write `409`, claim/complete, reject/approve, stage
 advance, close, comments, and the merged timeline.
 
-The server must already be running (for example `docker compose -f
-compose.dev.yaml up`, or `go run ./cmd/server`). The demo never touches the
+The server seeds this workspace through its own API at startup when
+`SEED_DEMO=true` (the default). The standalone command below remains useful for
+walking the flow again against a running server. The demo never touches the
 database.
 
     go run ./demo -base http://localhost:8080

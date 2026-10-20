@@ -103,6 +103,7 @@ func clearOptional(t *testing.T) {
 		"PORT", "SPA_DIR", "JWT_TTL", "MIGRATE_ON_BOOT", "DATABASE_URL",
 		"DB_HOST", "DB_PORT", "DB_USER", "DB_PASSWORD", "DB_NAME", "DB_SSLMODE",
 		"DB_MAX_OPEN_CONNS", "DB_MAX_IDLE_CONNS", "DB_CONN_MAX_LIFETIME", "DB_CONN_MAX_IDLE_TIME",
+		"SEED_DEMO",
 	} {
 		t.Setenv(key, "")
 	}

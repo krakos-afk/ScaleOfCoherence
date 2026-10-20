@@ -19,6 +19,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/http/httptest"
 	"sort"
 	"strings"
 	"time"
@@ -48,6 +49,7 @@ type client struct {
 	base  string
 	token string
 	out   io.Writer
+	http  *http.Client
 }
 
 type reply struct {
@@ -72,7 +74,11 @@ func (c *client) send(method, path string, payload any) reply {
 	if c.token != "" {
 		req.Header.Set("Authorization", "Bearer "+c.token)
 	}
-	resp, err := httpClient.Do(req)
+	hc := c.http
+	if hc == nil {
+		hc = httpClient
+	}
+	resp, err := hc.Do(req)
 	if err != nil {
 		die("%s %s: %v\nis the server running at %s?", method, path, err, c.base)
 	}
@@ -131,9 +137,32 @@ func (c *client) itemVersion(itemID string) int64 {
 	return num(c.call("GET", "/items/"+itemID, nil, http.StatusOK, "get item"), "version")
 }
 
-// Run seeds the demo workspace and walks one item through its workflow. It is
-// safe to call repeatedly; the workspace and accounts are reused.
-func Run(ctx context.Context, baseURL string, out io.Writer) (err error) {
+// Run seeds the demo workspace and walks one item through its workflow over
+// the network. It is safe to call repeatedly; the workspace and accounts are
+// reused.
+func Run(ctx context.Context, baseURL string, out io.Writer) error {
+	return run(ctx, baseURL, httpClient, out)
+}
+
+// handlerTransport dispatches HTTP requests directly to an in-process handler,
+// so startup seeding uses the public API without opening a socket.
+type handlerTransport struct {
+	handler http.Handler
+}
+
+func (t handlerTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	rec := httptest.NewRecorder()
+	t.handler.ServeHTTP(rec, req)
+	return rec.Result(), nil
+}
+
+// RunHandler runs the same demo through the API handler in-process. It is used
+// by the server at startup, after migrations and before the public listener.
+func RunHandler(ctx context.Context, handler http.Handler, out io.Writer) error {
+	return run(ctx, "http://demo.local", &http.Client{Transport: handlerTransport{handler: handler}}, out)
+}
+
+func run(ctx context.Context, baseURL string, hc *http.Client, out io.Writer) (err error) {
 	defer func() {
 		if p := recover(); p != nil {
 			f, ok := p.(failure)
@@ -153,7 +182,7 @@ func Run(ctx context.Context, baseURL string, out io.Writer) (err error) {
 		fmt.Fprintf(out, "   "+format+"\n", args...)
 	}
 
-	admin := &client{ctx: ctx, base: baseURL, out: out}
+	admin := &client{ctx: ctx, base: baseURL, out: out, http: hc}
 
 	step("1. Seed or reuse the demo workspace")
 	r := admin.send("POST", "/auth/login", map[string]any{
@@ -197,7 +226,7 @@ func Run(ctx context.Context, baseURL string, out io.Writer) (err error) {
 	}
 
 	login := func(username string) *client {
-		c := &client{ctx: ctx, base: baseURL, out: out}
+		c := &client{ctx: ctx, base: baseURL, out: out, http: hc}
 		c.token = str(c.call("POST", "/auth/login", map[string]any{
 			"email": emailFor(username), "password": demoPassword,
 		}, http.StatusOK, "login "+username), "token")

@@ -23,6 +23,7 @@ type Config struct {
 	JWTSecret     string
 	JWTTTL        time.Duration
 	MigrateOnBoot bool
+	SeedDemo      bool
 	Database      DatabaseConfig
 }
 
@@ -62,6 +63,12 @@ func Load() (Config, error) {
 		return cfg, err
 	}
 	cfg.MigrateOnBoot = migrateOnBoot
+
+	seedDemo, err := envBool("SEED_DEMO", true)
+	if err != nil {
+		return cfg, err
+	}
+	cfg.SeedDemo = seedDemo
 
 	db, err := loadDatabase()
 	if err != nil {

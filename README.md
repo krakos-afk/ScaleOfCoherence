@@ -113,6 +113,7 @@ Every setting is validated at startup; the server refuses to boot on bad values.
 | `DB_MAX_OPEN_CONNS` / `DB_MAX_IDLE_CONNS` | `20` / `20` | Connection pool limits |
 | `DB_CONN_MAX_LIFETIME` / `DB_CONN_MAX_IDLE_TIME` | `30m` / `5m` | Pool recycling |
 | `MIGRATE_ON_BOOT` | `true` | Set `false` when migrations run as a separate job |
+| `SEED_DEMO` | `true` | Seed demo accounts/workspace through the API at startup; set `false` for a clean deployment |
 | `PORT` | `8080` | HTTP listen port |
 | `SPA_DIR` | — | Directory of the built frontend to serve (`/app/web` in the image; unset in local dev) |
 
