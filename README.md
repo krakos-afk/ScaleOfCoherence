@@ -2,7 +2,6 @@
 
 ---
 
-This Project is made for a challenge round. \
 Find Architecture Decisions and Limitations [here](ENGINEERING_DECISIONS.md). \
 Find Dependency Decisions [here](DEPENDENCY_MAP.md). \
 Find Scalability [here](Scalability.md).
